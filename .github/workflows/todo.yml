@@ -1,0 +1,21 @@
+name: "VSLab Research Manager"
+
+on:
+  push:
+    [cite_start]branches: [ "main" ] # 최종 승인된 코드만 반영 
+
+jobs:
+  manage-todo:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4 # 코드를 읽어옴
+
+      - name: "Generate Research Issues"
+        uses: alstr/todo-to-issue-action@v5
+        with:
+          # 계획서의 업무 분담을 고려한 키워드 [cite: 142-143]
+          IDENTIFIERS: '["TODO", "OPTIMIZE", "EXPERIMENT"]'
+          # 이슈에 붙일 라벨 
+          LABELS: '["research", "todo"]'
+          # 라벨이 없으면 자동 생성 
+          INSERT_LABEL: true
