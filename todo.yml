@@ -1,0 +1,25 @@
+name: "VSLab Research Manager"
+
+# 언제 실행할지 정의합니다.
+on:
+  push:
+    [cite_start]branches: [ "main" ] # 
+
+jobs:
+  manage-todo:
+    runs-on: ubuntu-latest
+    steps:
+      # 1. 레포지토리 코드를 가져옵니다.
+      - name: "Checkout code"
+        uses: actions/checkout@v4
+
+      # 2. TODO 주석을 이슈로 변환합니다.
+      - name: "Generate Research Issues"
+        uses: alstr/todo-to-issue-action@v5
+        with:
+          # SLAM 연구 계획서에 맞춘 키워드입니다 [cite: 142, 143]
+          IDENTIFIERS: '["TODO", "OPTIMIZE", "EXPERIMENT"]'
+          # 이슈에 자동으로 붙을 라벨입니다 
+          LABELS: '["research", "todo"]'
+          # 라벨이 없으면 자동으로 생성하도록 설정합니다 
+          INSERT_LABEL: true
