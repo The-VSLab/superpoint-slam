@@ -26,7 +26,14 @@ class SuperPointNetV2(nn.Module):
         super(SuperPointNetV2, self).__init__()
         
         # 1. MobileNetV2 로드
-        v2_model = mobilenet_v2(pretrained=True).features
+        # PyTorch 0.13+에서는 pretrained 대신 weights 파라미터 사용
+        try:
+            # 최신 PyTorch (0.13+)
+            from torchvision.models import MobileNet_V2_Weights
+            v2_model = mobilenet_v2(weights=MobileNet_V2_Weights.IMAGENET1K_V1).features
+        except (ImportError, AttributeError):
+            # 구버전 PyTorch 호환성
+            v2_model = mobilenet_v2(pretrained=True).features
         
         # 2. 8배 다운샘플링 지점까지 자르기
         # Index 0~6까지가 딱 1/8 해상도 지점입니다. (입력 224 -> 출력 28)
