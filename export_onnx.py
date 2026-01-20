@@ -7,15 +7,7 @@ def export_superpoint_onnx(weights_path, output_path, device='cpu'):
     model = SuperPointNetV2()
     
     if weights_path:
-        # device를 map_location에 적절히 변환
-        if device == 'cpu':
-            map_location = 'cpu'
-        elif device.startswith('cuda'):
-            map_location = device
-        else:
-            map_location = device
-            
-        checkpoint = torch.load(weights_path, map_location=map_location)
+        checkpoint = torch.load(weights_path, map_location=device)
         
         # checkpoint가 딕셔너리이고 'state_dict' 키가 있는 경우 처리
         if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
