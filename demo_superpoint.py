@@ -641,7 +641,7 @@ if __name__ == '__main__':
   else:
     print('Skipping visualization, will not show a GUI.')
 
-  # Font parameters for visualizaton.
+  # Font parameters for visualization.
   font = cv2.FONT_HERSHEY_DUPLEX
   font_clr = (255, 255, 255)
   font_pt = (4, 12)
