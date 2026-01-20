@@ -93,7 +93,7 @@ class SuperPointFrontend(object):
                     self.net.load_state_dict(torch.load(weights_path,
                                          map_location=lambda storage, loc: storage))
             else:
-                print(f'Warning: Weights file not found at {weights_path}. Using default pretrained MobileNet weights.')
+                print(f'Warning: Weights file not found at {weights_path}. Using pretrained MobileNet backbone with randomly initialized detector/descriptor heads.')
         self.net.eval()
 
     def nms_fast(self, in_corners, H, W, dist_thresh):
