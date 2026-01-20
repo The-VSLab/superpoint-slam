@@ -53,5 +53,6 @@ wheels/
 # AI Context
 AGENTS.md
 
-# VS Code 환경 설정 제외
+# OS & IDE
+.DS_Store
 .vscode/
