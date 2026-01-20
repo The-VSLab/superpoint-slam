@@ -13,7 +13,7 @@ The script can run with or without PyTorch installed:
 import sys
 
 # Backbone configuration
-BACKBONE_LAYER_COUNT = 7  # features[:7] includes layers 0-6
+BACKBONE_LAYER_COUNT = 7  # features[:7] includes layers 0-6 (7 total layers, 0-indexed)
 
 def verify_with_pytorch():
     """Verify channel count using actual PyTorch model."""
@@ -92,7 +92,7 @@ def verify_architecturally():
     print("-" * 80)
     
     # MobileNetV2 inverted residual settings
-    # Format: [expansion_ratio, output_channels, num_blocks, stride]
+    # Format: [name, expansion_ratio, output_channels, num_blocks, stride, final_channels]
     architecture = [
         ("Initial Conv", None, None, None, 2, 32),  # features[0]
         ("IR Block 1", 1, 16, 1, 1, 16),           # features[1]
@@ -124,7 +124,7 @@ def verify_architecturally():
                 layer_idx += 1
                 
                 # Highlight backbone endpoint
-                if layer_idx == 7:
+                if layer_idx == BACKBONE_LAYER_COUNT:
                     print(" " * 12 + "^^^ backbone endpoint (features[:7]) ^^^")
     
     print("\n" + "=" * 80)
