@@ -40,6 +40,12 @@ class SuperPointNetV2(nn.Module):
         self.backbone = nn.Sequential(*list(v2_model.children())[:7])
         
         # MobileNetV2의 해당 지점 출력 채널 수는 32입니다.
+        # 참고: layers 0-6 구조:
+        #   - Layer 0: 초기 Conv (stride=2) -> 32채널, 1/2 해상도
+        #   - Layer 1: IR block -> 16채널, 1/2 해상도
+        #   - Layers 2-3: IR blocks -> 24채널, 1/4 해상도
+        #   - Layers 4-6: IR blocks -> 32채널, 1/8 해상도 ✓
+        # 검증 스크립트: verify_mobilenet_channels.py
         in_channels = 32
 
         # 3. 특징점 검출 헤드 (Detector Head)
