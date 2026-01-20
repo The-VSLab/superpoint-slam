@@ -84,13 +84,16 @@ class SuperPointFrontend(object):
 
         # 추론 모드로 네트워크 로드
         self.net = SuperPointNetV2()
-        if weights_path is not None and os.path.exists(weights_path):
-            if cuda:
-                self.net.load_state_dict(torch.load(weights_path))
-                self.net = self.net.cuda()
+        if weights_path is not None:
+            if os.path.exists(weights_path):
+                if cuda:
+                    self.net.load_state_dict(torch.load(weights_path))
+                    self.net = self.net.cuda()
+                else:
+                    self.net.load_state_dict(torch.load(weights_path,
+                                         map_location=lambda storage, loc: storage))
             else:
-                self.net.load_state_dict(torch.load(weights_path,
-                                     map_location=lambda storage, loc: storage))
+                print(f'Warning: Weights file not found at {weights_path}. Using default pretrained MobileNet weights.')
         self.net.eval()
 
     def nms_fast(self, in_corners, H, W, dist_thresh):
