@@ -67,7 +67,8 @@ def export_superpoint_onnx(weights_path, output_path, device='cpu'):
 
 if __name__ == "__main__":
     # 파일 경로는 본인의 환경에 맞게 수정하세요.
-    WEIGHTS = "superpoint_v2_mobilenet.pth" # 실제 가중치 파일이 있다면 지정
+    # 가중치 파일이 있다면 경로를 지정하고, 없다면 None으로 설정하세요.
+    WEIGHTS = None  # 예: "superpoint_v2_mobilenet.pth"
     OUTPUT = "superpoint_v2_mobilenet.onnx"
     
-    export_superpoint_onnx(None, OUTPUT) # 현재는 가중치 파일이 없으므로 None 전달
+    export_superpoint_onnx(WEIGHTS, OUTPUT)
