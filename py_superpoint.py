@@ -560,6 +560,10 @@ if __name__ == '__main__':
         help='출력 프레임을 디렉토리에 저장 (기본값: False)')
     parser.add_argument('--write_dir', type=str, default='tracker_outputs/',
         help='출력 프레임을 저장할 디렉토리 (기본값: tracker_outputs/).')
+    parser.add_argument('--save_npy', action='store_true',
+        help='각 프레임의 특징점/디스크립터/히트맵을 .npy로 저장 (기본값: False).')
+    parser.add_argument('--save_npy_dir', type=str, default='npy_outputs/',
+        help='.npy 결과를 저장할 디렉토리 (기본값: npy_outputs/).')
     opt = parser.parse_args()
     print(opt)
 
@@ -596,6 +600,9 @@ if __name__ == '__main__':
         print('==> 출력을 %s에 저장합니다' % opt.write_dir)
         if not os.path.exists(opt.write_dir):
             os.makedirs(opt.write_dir)
+    if opt.save_npy:
+        if not os.path.exists(opt.save_npy_dir):
+            os.makedirs(opt.save_npy_dir)
 
     print('==> 데모 실행 중.')
     while True:
@@ -665,6 +672,14 @@ if __name__ == '__main__':
             out_file = os.path.join(opt.write_dir, 'frame_%05d.png' % vs.i)
             print('이미지를 %s에 저장 중' % out_file)
             cv2.imwrite(out_file, out)
+        # 선택적으로 npy 결과 저장
+        if opt.save_npy:
+            base = os.path.join(opt.save_npy_dir, 'frame_%05d' % vs.i)
+            np.save(base + '_pts.npy', pts)
+            if desc is not None:
+                np.save(base + '_desc.npy', desc)
+            if heatmap is not None:
+                np.save(base + '_heatmap.npy', heatmap)
 
         end = time.time()
         net_t = (1./ float(end1 - start))
