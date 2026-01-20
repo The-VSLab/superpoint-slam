@@ -485,7 +485,7 @@ class PointTracker(object):
           cv2.circle(out, p2, stroke, clr2, -1, lineType=16)
 
 class VideoStreamer(object):
-  """ Class to help process image streams. Three types of possible inputs:"
+  """ Class to help process image streams. Three types of possible inputs:
     1.) USB Webcam.
     2.) A directory of images (files in directory matching 'img_glob').
     3.) A video file, such as an .mp4 or .avi file.
