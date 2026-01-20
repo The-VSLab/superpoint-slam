@@ -39,3 +39,20 @@
 
 # debug information files
 *.dwo
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# AI Context
+AGENTS.md
+
+# OS & IDE
+.DS_Store
+.vscode/
