@@ -12,6 +12,9 @@ The script can run with or without PyTorch installed:
 
 import sys
 
+# Backbone configuration
+BACKBONE_LAYER_COUNT = 7  # features[:7] includes layers 0-6
+
 def verify_with_pytorch():
     """Verify channel count using actual PyTorch model."""
     try:
@@ -32,7 +35,7 @@ def verify_with_pytorch():
             print("\nLoaded MobileNetV2 (no pretrained weights)")
         
         # Extract backbone (layers 0-6)
-        backbone = torch.nn.Sequential(*list(model.children())[:7])
+        backbone = torch.nn.Sequential(*list(model.children())[:BACKBONE_LAYER_COUNT])
         
         print("\nBackbone structure (layers 0-6):")
         print("-" * 80)
@@ -127,7 +130,7 @@ def verify_architecturally():
     print("\n" + "=" * 80)
     print("SUMMARY")
     print("=" * 80)
-    print("\nBackbone = features[:7] (includes layers 0-6)")
+    print(f"\nBackbone = features[:{BACKBONE_LAYER_COUNT}] (includes layers 0-6)")
     print("  • Layer 0: Initial convolution (stride=2) -> 32 channels at 1/2 resolution")
     print("  • Layer 1: First IR block -> 16 channels at 1/2 resolution")
     print("  • Layers 2-3: Second IR group -> 24 channels at 1/4 resolution")
