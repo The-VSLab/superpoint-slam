@@ -676,8 +676,9 @@ if __name__ == '__main__':
 
     # Primary output - Show point tracks overlayed on top of input image.
     out1 = (np.dstack((img, img, img)) * 255.).astype('uint8')
-    tracks[:, 1] /= float(fe.nn_thresh) # Normalize track scores to [0,1].
-    tracker.draw_tracks(out1, tracks)
+    if tracks.shape[0] > 0:
+      tracks[:, 1] /= float(fe.nn_thresh) # Normalize track scores to [0,1].
+      tracker.draw_tracks(out1, tracks)
     if opt.show_extra:
       cv2.putText(out1, 'Point Tracks', font_pt, font, font_sc, font_clr, lineType=16)
 
