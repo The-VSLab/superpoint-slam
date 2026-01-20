@@ -28,7 +28,7 @@ def verify_with_pytorch():
             model = mobilenet_v2(weights=MobileNet_V2_Weights.IMAGENET1K_V1).features
             print("\nLoaded MobileNetV2 with IMAGENET1K_V1 weights")
         except (ImportError, AttributeError):
-            model = mobilenet_v2(pretrained=False).features
+            model = mobilenet_v2(weights=None).features
             print("\nLoaded MobileNetV2 (no pretrained weights)")
         
         # Extract backbone (layers 0-6)
@@ -154,9 +154,8 @@ def main():
     print("\n" + "=" * 80)
     print("FINAL VERDICT")
     print("=" * 80)
-    print("\nThe comment in py_superpoint.py line 42:")
-    print('  "# MobileNetV2의 해당 지점 출력 채널 수는 32입니다."')
-    print('  "# MobileNetV2 outputs 32 channels at this point."')
+    print("\nThe comment in py_superpoint.py stating that")
+    print('  "MobileNetV2 outputs 32 channels at this point"')
     print("\nis CORRECT ✓")
     print("\nThe code correctly uses in_channels = 32 for the detector and")
     print("descriptor heads, matching the actual output of features[:7].")

@@ -35,17 +35,19 @@ class SuperPointNetV2(nn.Module):
             # 구버전 PyTorch 호환성
             v2_model = mobilenet_v2(pretrained=True).features
         
-        # 2. 8배 다운샘플링 지점까지 자르기
+        # 2. 8배 다운샘플링 지점까지 자르기 (Crop to 1/8 downsampling point)
         # Index 0~6까지가 딱 1/8 해상도 지점입니다. (입력 224 -> 출력 28)
+        # (Indices 0-6 correspond to 1/8 resolution, e.g., input 224 -> output 28)
         self.backbone = nn.Sequential(*list(v2_model.children())[:7])
         
         # MobileNetV2의 해당 지점 출력 채널 수는 32입니다.
-        # 참고: layers 0-6 구조:
-        #   - Layer 0: 초기 Conv (stride=2) -> 32채널, 1/2 해상도
-        #   - Layer 1: IR block -> 16채널, 1/2 해상도
-        #   - Layers 2-3: IR blocks -> 24채널, 1/4 해상도
-        #   - Layers 4-6: IR blocks -> 32채널, 1/8 해상도 ✓
-        # 검증 스크립트: verify_mobilenet_channels.py
+        # (MobileNetV2 outputs 32 channels at this point)
+        # 참고 (Reference): layers 0-6 structure:
+        #   - Layer 0: Initial Conv (stride=2) -> 32 channels, 1/2 resolution
+        #   - Layer 1: IR block -> 16 channels, 1/2 resolution
+        #   - Layers 2-3: IR blocks -> 24 channels, 1/4 resolution
+        #   - Layers 4-6: IR blocks -> 32 channels, 1/8 resolution ✓
+        # 검증 스크립트 (Verification script): verify_mobilenet_channels.py
         in_channels = 32
 
         # 3. 특징점 검출 헤드 (Detector Head)
