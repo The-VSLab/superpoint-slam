@@ -228,7 +228,7 @@ class SuperPointFrontend(object):
     inp = img.copy()
     inp = (inp.reshape(1, H, W))
     inp = torch.from_numpy(inp)
-    inp = torch.autograd.Variable(inp).view(1, 1, H, W)
+    inp = inp.view(1, 1, H, W)
     if self.cuda:
       inp = inp.cuda()
     # Forward pass of network.
