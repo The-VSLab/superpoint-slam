@@ -731,4 +731,4 @@ if __name__ == '__main__':
   # Close any remaining windows.
   cv2.destroyAllWindows()
 
-  print('==> Finshed Demo.')
+  print('==> Finished Demo.')
