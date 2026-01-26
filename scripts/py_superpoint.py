@@ -85,12 +85,19 @@ class SuperPointFrontend(object):
         # 추론 모드로 네트워크 로드
         self.net = SuperPointNetV2()
         if weights_path is not None and os.path.exists(weights_path):
+            checkpoint = torch.load(weights_path, map_location='cpu')
+            
+            # Shape mismatch 무시하고 호환되는 파라미터만 로드
+            model_state = self.net.state_dict()
+            compatible_state = {}
+            for k, v in checkpoint.items():
+                if k in model_state and model_state[k].shape == v.shape:
+                    compatible_state[k] = v
+            
+            self.net.load_state_dict(compatible_state, strict=False)
+            
             if cuda:
-                self.net.load_state_dict(torch.load(weights_path))
                 self.net = self.net.cuda()
-            else:
-                self.net.load_state_dict(torch.load(weights_path,
-                                     map_location=lambda storage, loc: storage))
         self.net.eval()
 
     def nms_fast(self, in_corners, H, W, dist_thresh):
