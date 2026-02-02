@@ -106,9 +106,9 @@ class IntegratedMatchingPipeline:
     통합 매칭 파이프라인
     특징점 추출과 매칭을 동시에 수행
     """
-    
+    # 초기화 및 가중치 파일 업로드
     def __init__(self, output_dir='matching_results_integrated', 
-                 weights_path='superpoint_v1.pth', 
+                 weights_path='superpoint_v2_mobilenet.pth', 
                  nn_thresh=0.7, cuda=True, display=True):
         """
         Parameters
@@ -343,7 +343,7 @@ def main():
     parser.add_argument(
         '--weights',
         type=str,
-        default='superpoint_v1.pth',
+        default='superpoint_v2_mobilenet.pth',
         help='SuperPoint 가중치 파일 경로'
     )
     parser.add_argument(
