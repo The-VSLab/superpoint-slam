@@ -95,15 +95,15 @@ class SuperPointFrontend(object):
                     compatible_state[k] = v
             
             self.net.load_state_dict(compatible_state, strict=False)
-
-            # 로드된 파라미터 비율 로깅 (디버깅 및 검증용)
-            total_params = len(model_state)
-            loaded_params = len(compatible_state)
-            print(f"[SuperPointFrontend] Loaded {loaded_params}/{total_params} parameters "
-                  f"from '{weights_path}' (shape-matched only).")
             
-            if cuda:
+            if self.cuda and torch.cuda.is_available():
                 self.net = self.net.cuda()
+            elif torch.backends.mps.is_available():
+                self.net = self.net.to('mps')
+                print("   -> Using Apple Silicon GPU (MPS)")
+            else:
+                self.net = self.net.to('cpu')
+                print("   -> Using CPU")
         self.net.eval()
 
     def nms_fast(self, in_corners, H, W, dist_thresh):
