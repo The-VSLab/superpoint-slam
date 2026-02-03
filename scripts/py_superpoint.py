@@ -95,6 +95,12 @@ class SuperPointFrontend(object):
                     compatible_state[k] = v
             
             self.net.load_state_dict(compatible_state, strict=False)
+
+            # 로드된 파라미터 비율 로깅 (디버깅 및 검증용)
+            total_params = len(model_state)
+            loaded_params = len(compatible_state)
+            print(f"[SuperPointFrontend] Loaded {loaded_params}/{total_params} parameters "
+                  f"from '{weights_path}' (shape-matched only).")
             
             if cuda:
                 self.net = self.net.cuda()
