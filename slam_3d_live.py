@@ -10,6 +10,18 @@ import sys
 from scripts.py_superpoint import SuperPointFrontend
 from matcher_module import BTMatcher
 
+# --- 환경별 장치 자동 설정 함수 추가 ---
+def get_optimal_device():
+    """
+    NVIDIA GPU(CUDA), Apple Silicon(MPS), CPU 중 최적의 장치를 반환
+    """
+    if torch.cuda.is_available():
+        return "cuda"
+    elif torch.backends.mps.is_available():
+        return "mps"
+    else:
+        return "cpu"
+
 def create_camera_frustum(scale=1.0, color=[0, 0, 1]):
     """카메라 위치를 나타내는 피라미드(Frustum) 생성"""
     points = [
@@ -42,6 +54,13 @@ def get_height_color(y_vals, y_min=-5.0, y_max=2.0):
 
 class VisualSLAM3D:
     def __init__(self, weights_path, input_path, nn_thresh=0.7):
+        # 1. 장치 결정
+        self.device = get_optimal_device()
+        # SuperPointFrontend는 내부 설계상 True/False(CUDA 사용여부)를 받는 경우가 많으므로 호환성 유지
+        self.use_cuda = (self.device == "cuda")
+        
+        print(f"==> Running on device: {self.device.upper()}")
+
         self.input_path = input_path
         
         cap = cv2.VideoCapture(input_path)
@@ -58,8 +77,8 @@ class VisualSLAM3D:
         self.K = np.array([[self.focal, 0, self.cx], [0, self.focal, self.cy], [0, 0, 1]])
 
         print("==> Loading SuperPoint...")
-        self.fe = SuperPointFrontend(weights_path=weights_path, nms_dist=4, conf_thresh=0.003, nn_thresh=0.7, cuda=True)
-        self.matcher = BTMatcher(nn_thresh=nn_thresh, use_cuda=True, mutual=True)
+        self.fe = SuperPointFrontend(weights_path=weights_path, nms_dist=4, conf_thresh=0.003, nn_thresh=0.7, cuda=self.use_cuda)
+        self.matcher = BTMatcher(nn_thresh=nn_thresh, use_cuda=self.use_cuda, mutual=True)
 
         self.prev_frame = None
         self.prev_kpts = None
