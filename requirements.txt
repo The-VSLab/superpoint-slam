@@ -8,6 +8,7 @@ torchvision>=0.15,<0.18
 
 # Vision
 opencv-python>=4.8,<4.10
+open3d>=0.17.0
 
 # Utilities
 tqdm>=4.65
