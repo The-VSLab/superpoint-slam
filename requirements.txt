@@ -6,9 +6,9 @@ scipy>=1.9
 torch>=2.0,<2.3
 torchvision>=0.15,<0.18
 
-# Vision
+# Vision / Geometry
 opencv-python>=4.8,<4.10
-open3d>=0.17.0
+open3d>=0.17.0,<0.20.0
 
 # Utilities
 tqdm>=4.65
@@ -17,5 +17,5 @@ pyyaml>=6.0
 # Logging / Visualization
 tensorboard>=2.12
 
-# Optional (used by some utilities)
+# Optional
 werkzeug>=3.1
