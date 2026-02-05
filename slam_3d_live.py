@@ -53,7 +53,7 @@ def get_height_color(y_vals, y_min=-5.0, y_max=2.0):
     return colors
 
 class VisualSLAM3D:
-    def __init__(self, weights_path, input_path, nn_thresh=0.7):
+    def __init__(self, weights_path, input_path, nn_thresh=0.7, mask_car=False):
         # 1. 장치 결정
         self.device = get_optimal_device()
         # SuperPointFrontend는 내부 설계상 True/False(CUDA 사용여부)를 받는 경우가 많으므로 호환성 유지
@@ -63,18 +63,47 @@ class VisualSLAM3D:
 
         self.input_path = input_path
         
+        # 비디오의 실제 해상도 읽기
         cap = cv2.VideoCapture(input_path)
-        if not cap.isOpened(): raise ValueError(f"Error: {input_path}")
-        self.W, self.H = 640, 480
+        if not cap.isOpened(): 
+            raise ValueError(f"Error: Cannot open video file {input_path}")
+        
+        # 실제 비디오 해상도 읽기
+        orig_W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        orig_H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         cap.release()
         
-        print(f"==> Resolution: {self.W}x{self.H}")
+        # SuperPoint는 8의 배수 해상도가 필요하므로 조정
+        # 종횡비를 유지하면서 8의 배수로 맞춤
+        target_max_dim = 640  # 최대 해상도 제한 (성능 고려)
+        scale = min(target_max_dim / max(orig_W, orig_H), 1.0)
+        self.W = int(orig_W * scale)
+        self.H = int(orig_H * scale)
+        
+        # 8의 배수로 반올림
+        self.W = ((self.W + 4) // 8) * 8
+        self.H = ((self.H + 4) // 8) * 8
+        
+        print(f"==> Original resolution: {orig_W}x{orig_H}")
+        print(f"==> Processing resolution: {self.W}x{self.H} (8의 배수로 조정)")
 
-        # 카메라 파라미터 (일반적인 블랙박스 화각)
-        self.focal = max(self.W, self.H) * 0.8
+        # 카메라 파라미터 설정 (일반 MP4 영상에 적합)
+        # FOV 기반 추정: 일반적인 스마트폰/웹캠은 약 60-70도 FOV
+        # focal = (W or H) / (2 * tan(FOV/2))
+        # 60도 FOV 기준: focal ≈ W * 0.866
+        # 70도 FOV 기준: focal ≈ W * 0.7
+        # 일반적인 값으로 W와 H의 평균 사용
+        avg_dim = (self.W + self.H) / 2.0
+        # 일반적인 카메라의 경우 focal length는 이미지 크기의 0.7~1.0배
+        # 더 보수적으로 0.8~0.9 사용 (KITTI는 약 0.7 정도였음)
+        self.focal = avg_dim * 0.85  # 일반 MP4 영상에 적합한 값
         self.cx = self.W / 2.0
         self.cy = self.H / 2.0
-        self.K = np.array([[self.focal, 0, self.cx], [0, self.focal, self.cy], [0, 0, 1]])
+        self.K = np.array([[self.focal, 0, self.cx], 
+                          [0, self.focal, self.cy], 
+                          [0, 0, 1]], dtype=np.float64)
+        
+        print(f"==> Camera parameters: focal={self.focal:.1f}, cx={self.cx:.1f}, cy={self.cy:.1f}")
 
         print("==> Loading SuperPoint...")
         self.fe = SuperPointFrontend(weights_path=weights_path, nms_dist=4, conf_thresh=0.003, nn_thresh=0.7, cuda=self.use_cuda)
@@ -94,6 +123,9 @@ class VisualSLAM3D:
 
         self.save_dir = "path_final"
         if not os.path.exists(self.save_dir): os.makedirs(self.save_dir)
+        
+        # 차량 대시보드 마스킹 옵션 (KITTI 데이터셋용, 일반 MP4는 False 권장)
+        self.mask_car_enabled = mask_car
 
         # 실시간 2D 확인창
         cv2.namedWindow('Processing', cv2.WINDOW_NORMAL)
@@ -123,9 +155,14 @@ class VisualSLAM3D:
             ret, frame = cap.read()
             if not ret: break
 
-            img_curr = cv2.resize(frame, (self.W, self.H))
+            # 설정된 해상도로 리사이즈 (종횡비 유지 고려)
+            img_curr = cv2.resize(frame, (self.W, self.H), interpolation=cv2.INTER_AREA)
             img_gray = cv2.cvtColor(img_curr, cv2.COLOR_BGR2GRAY)
-            img_masked = self.mask_car(img_gray.copy())
+            # 차량 마스킹은 선택적 (KITTI 데이터셋용)
+            if self.mask_car_enabled:
+                img_masked = self.mask_car(img_gray.copy())
+            else:
+                img_masked = img_gray
             img_fe = (img_masked.astype(np.float32) / 255.0)
 
             # 특징점 추출
@@ -300,9 +337,16 @@ class VisualSLAM3D:
         print(" -> Map saved.")
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--input', type=str, required=True)
-    parser.add_argument('--weights', type=str, required=True)
+    parser = argparse.ArgumentParser(description='SuperPoint-based 3D Visual SLAM')
+    parser.add_argument('--input', type=str, required=True,
+                        help='Input video file path (MP4, AVI, etc.)')
+    parser.add_argument('--weights', type=str, required=True,
+                        help='Path to SuperPoint model weights (.pth file)')
+    parser.add_argument('--nn_thresh', type=float, default=0.7,
+                        help='Descriptor matching threshold (default: 0.7)')
+    parser.add_argument('--mask_car', action='store_true',
+                        help='Enable car dashboard masking (for KITTI dataset, disabled by default for general MP4)')
     args = parser.parse_args()
-    slam = VisualSLAM3D(weights_path=args.weights, input_path=args.input)
+    slam = VisualSLAM3D(weights_path=args.weights, input_path=args.input, 
+                        nn_thresh=args.nn_thresh, mask_car=args.mask_car)
     slam.process()

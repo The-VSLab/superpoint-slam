@@ -87,10 +87,21 @@ class SuperPointFrontend(object):
         if weights_path is not None and os.path.exists(weights_path):
             checkpoint = torch.load(weights_path, map_location='cpu')
             
+            # checkpoint가 'state_dict' 키를 포함하는 딕셔너리 형태인지 확인
+            if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
+                state_dict_to_load = checkpoint['state_dict']
+                print(f"[SuperPointFrontend] Loading 'state_dict' from wrapped checkpoint.")
+            else:
+                state_dict_to_load = checkpoint
+                print(f"[SuperPointFrontend] Loading raw checkpoint (not wrapped).")
+            
             # Shape mismatch 무시하고 호환되는 파라미터만 로드
             model_state = self.net.state_dict()
             compatible_state = {}
-            for k, v in checkpoint.items():
+            for k, v in state_dict_to_load.items():
+                # 'module.' 접두사 제거 (DataParallel로 저장된 모델 호환성)
+                if k.startswith('module.'):
+                    k = k[7:]
                 if k in model_state and model_state[k].shape == v.shape:
                     compatible_state[k] = v
             
@@ -193,6 +204,10 @@ class SuperPointFrontend(object):
         assert img.ndim == 2, '이미지는 흑백이어야 합니다.'
         assert img.dtype == np.float32, '이미지는 float32여야 합니다.'
         H, W = img.shape[0], img.shape[1]
+        
+        # H, W가 self.cell (8)의 배수인지 확인
+        assert H % self.cell == 0 and W % self.cell == 0, \
+            f'입력 이미지 크기 (H={H}, W={W})는 self.cell ({self.cell})의 배수여야 합니다.'
         inp = img.copy()
         inp = (inp.reshape(1, H, W))
         inp = torch.from_numpy(inp)
@@ -246,6 +261,11 @@ class SuperPointFrontend(object):
             samp_pts = samp_pts.view(1, 1, -1, 2)
             samp_pts = samp_pts.float()
             samp_pts = samp_pts.to(self.device)
+            
+            # coarse_desc가 올바른 디바이스에 있는지 확인 (안전성 체크)
+            if coarse_desc.device != self.device:
+                coarse_desc = coarse_desc.to(self.device)
+            
             desc = torch.nn.functional.grid_sample(coarse_desc, samp_pts)
             desc = desc.data.cpu().numpy().reshape(D, -1)
             desc /= np.linalg.norm(desc, axis=0)[np.newaxis, :]
@@ -529,7 +549,7 @@ class VideoStreamer(object):
                 self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.listing[self.i])
             input_image = cv2.resize(input_image, (self.sizer[1], self.sizer[0]),
                                    interpolation=cv2.INTER_AREA)
-            input_image = cv2.cvtColor(input_image, cv2.COLOR_RGB2GRAY)
+            input_image = cv2.cvtColor(input_image, cv2.COLOR_BGR2GRAY)
             input_image = input_image.astype('float')/255.0
         else:
             image_file = self.listing[self.i]
