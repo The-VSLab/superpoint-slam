@@ -1,157 +1,339 @@
 import argparse
 import glob
+import math
 import os
 import random
+from typing import List, Tuple
+
+import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
-import cv2
 
-# SuperPoint 모델 임포트 (경로에 맞게 수정)
 try:
     from scripts.py_superpoint import SuperPointNetV2
 except ImportError:
     from py_superpoint import SuperPointNetV2
 
-def set_seed(seed):
+
+def set_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
-# --- 1. 정답지(.npz)를 읽는 데이터셋 클래스 ---
-class SyntheticDataset(Dataset):
-    def __init__(self, root, height=480, width=640):
-        self.root = root
-        self.height = height
-        self.width = width
-        self.files = sorted(glob.glob(os.path.join(root, "*.jpg")))
-        if len(self.files) == 0:
-            raise ValueError(f"No images found in {root}")
 
-    def __len__(self):
-        return len(self.files)
+def list_images(root: str) -> List[str]:
+    exts = ("*.png", "*.jpg", "*.jpeg", "*.bmp")
+    paths = []
+    for ext in exts:
+        paths.extend(glob.glob(os.path.join(root, "**", ext), recursive=True))
+    return sorted(paths)
 
-    def __getitem__(self, idx):
-        # 1. 이미지 로드
-        img_path = self.files[idx]
-        img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
-        img = cv2.resize(img, (self.width, self.height))
-        img_tensor = torch.from_numpy(img.astype(np.float32) / 255.0).unsqueeze(0)
 
-        # 2. 정답(.npz) 로드
-        label_path = img_path.replace(".jpg", ".npz")
-        try:
-            points = np.load(label_path)['points'] # [Row, Col] format
-        except:
-            points = np.zeros((0, 2))
+class ImageFolderDataset(Dataset):
+    def __init__(self, root: str, image_size: Tuple[int, int]) -> None:
+        self.paths = list_images(root)
+        if not self.paths:
+            raise ValueError(f"No images found under: {root}")
+        self.height, self.width = image_size
 
-        # 3. 좌표를 히트맵(Label)으로 변환
-        # SuperPoint는 8x8 그리드마다 하나의 채널을 가집니다 (총 65채널: 64개 셀 + 1개 dustbin)
-        heatmap = self.labels2Dto3D(points, self.height, self.width)
+    def __len__(self) -> int:
+        return len(self.paths)
 
-        return img_tensor, heatmap
+    def __getitem__(self, idx: int) -> torch.Tensor:
+        path = self.paths[idx]
+        img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            raise ValueError(f"Failed to read image: {path}")
+        img = cv2.resize(img, (self.width, self.height), interpolation=cv2.INTER_AREA)
+        img = img.astype(np.float32) / 255.0
+        return torch.from_numpy(img).unsqueeze(0)
 
-    def labels2Dto3D(self, labels, H, W, cell_size=8):
-        # Hc x Wc 크기의 그리드 생성
-        Hc, Wc = H // cell_size, W // cell_size
-        # 65번째 채널(dustbin, 배경)로 초기화
-        target = np.zeros((H, W), dtype=np.uint8)
+
+def sample_homography(
+    height: int,
+    width: int,
+    max_translate: float,
+    max_rotate: float,
+    max_scale: float,
+    max_perspective: float,
+) -> np.ndarray:
+    src = np.array(
+        [[0, 0], [width - 1, 0], [width - 1, height - 1], [0, height - 1]],
+        dtype=np.float32,
+    )
+
+    cx, cy = width / 2.0, height / 2.0
+    angle = np.deg2rad(random.uniform(-max_rotate, max_rotate))
+    scale = random.uniform(1.0 - max_scale, 1.0 + max_scale)
+    tx = random.uniform(-max_translate, max_translate) * width
+    ty = random.uniform(-max_translate, max_translate) * height
+
+    rot = np.array(
+        [[math.cos(angle), -math.sin(angle)], [math.sin(angle), math.cos(angle)]],
+        dtype=np.float32,
+    )
+    dst = src - np.array([[cx, cy]], dtype=np.float32)
+    dst = dst @ rot.T * scale
+    dst = dst + np.array([[cx + tx, cy + ty]], dtype=np.float32)
+
+    persp = np.random.uniform(-max_perspective, max_perspective, size=(4, 2))
+    dst = dst + persp.astype(np.float32) * np.array([[width, height]], dtype=np.float32)
+
+    h_mat = cv2.getPerspectiveTransform(src, dst.astype(np.float32))
+    return h_mat
+
+
+def homography_grid(h_mat: torch.Tensor, height: int, width: int) -> torch.Tensor:
+    device = h_mat.device
+    y, x = torch.meshgrid(
+        torch.arange(height, device=device),
+        torch.arange(width, device=device),
+        indexing="ij",
+    )
+    ones = torch.ones_like(x)
+    coords = torch.stack([x, y, ones], dim=-1).float()  # H x W x 3
+    coords = coords.view(-1, 3).t()  # 3 x (H*W)
+
+    h_inv = torch.linalg.inv(h_mat)
+    warped = h_inv @ coords  # 3 x (H*W)
+    warped = warped / (warped[2:3, :] + 1e-8)
+
+    x_w = warped[0, :].view(height, width)
+    y_w = warped[1, :].view(height, width)
+
+    x_norm = (x_w / (width - 1)) * 2 - 1
+    y_norm = (y_w / (height - 1)) * 2 - 1
+    grid = torch.stack([x_norm, y_norm], dim=-1)
+    return grid
+
+
+def warp_tensor(
+    tensor: torch.Tensor,
+    h_mat: torch.Tensor,
+    mode: str = "bilinear",
+    use_cpu: bool = None,
+) -> torch.Tensor:
+    b, c, h, w = tensor.shape
+    
+    # [Cross-Platform Fix]
+    if use_cpu is None:
+        use_cpu = (tensor.device.type == "mps")
+
+    warped = []
+    for i in range(b):
+        grid = homography_grid(h_mat[i], h, w)
+        grid = grid.unsqueeze(0)
         
-        # 라벨이 있는 곳만 1로 표시 (Sparse)
-        for pt in labels:
-            r, c = int(pt[0]), int(pt[1])
-            if 0 <= r < H and 0 <= c < W:
-                target[r, c] = 1
-
-        target = torch.from_numpy(target).long()
-        
-        # 8x8 블록으로 픽셀을 모음 -> (Hc, Wc, 64)가 됨
-        # 공간을 채널로 바꾸는 과정 (Space to Depth)
-        target = target.view(Hc, cell_size, Wc, cell_size)
-        target = target.permute(0, 2, 1, 3).contiguous()
-        target = target.view(Hc, Wc, cell_size * cell_size)
-        target = target.permute(2, 0, 1) # (64, Hc, Wc)
-
-        # 정답이 있는 곳의 채널 인덱스 찾기
-        target_map = torch.argmax(target, dim=0) # (Hc, Wc) 값이 0~63
-        
-        # 정답이 없는 곳(모두 0)은 65번째(인덱스 64) 'Dustbin' 클래스로 설정
-        # sum이 0이면 포인트가 없는 것
-        valid_mask = torch.sum(target, dim=0) > 0
-        labels_final = torch.full((Hc, Wc), 64, dtype=torch.long) # Default to Dustbin (64)
-        labels_final[valid_mask] = target_map[valid_mask]
-        
-        return labels_final
+        if use_cpu:
+            tensor_i = tensor[i:i + 1].cpu()
+            grid = grid.cpu()
+            warped_i = F.grid_sample(tensor_i, grid, mode=mode, align_corners=True)
+            warped.append(warped_i.to(tensor.device))
+        else:
+            warped.append(F.grid_sample(tensor[i:i + 1], grid, mode=mode, align_corners=True))
+            
+    return torch.cat(warped, dim=0)
 
 
-def train(args):
+def semi_to_heatmap(semi: torch.Tensor, cell: int = 8) -> torch.Tensor:
+    prob = F.softmax(semi, dim=1)
+    nodust = prob[:, :-1, :, :]
+    b, c, h, w = nodust.shape  # c=64
+    nodust = nodust.view(b, cell, cell, h, w)
+    nodust = nodust.permute(0, 3, 1, 4, 2)
+    heatmap = nodust.reshape(b, h * cell, w * cell)
+    return heatmap
+
+
+def normalize_desc(desc: torch.Tensor) -> torch.Tensor:
+    return F.normalize(desc, p=2, dim=1)
+
+
+def resolve_device(requested: str) -> torch.device:
+    if requested != "auto":
+        return torch.device(requested)
+
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
+def train(args: argparse.Namespace) -> None:
     set_seed(args.seed)
-    device = torch.device(args.device if args.device != "auto" else ("mps" if torch.backends.mps.is_available() else "cpu"))
+
+    device = resolve_device(args.device)
     print(f"Using device: {device}")
 
-    # 모델 준비
     model = SuperPointNetV2().to(device)
-    
-    # 데이터 로더 준비
-    dataset = SyntheticDataset(args.data_dir, args.height, args.width)
-    loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
 
-    # Optimizer
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-    
-    # Loss Function: CrossEntropy (정답지와 내 예측 비교)
-    criterion = torch.nn.CrossEntropyLoss()
+    # [가중치 로드 부분]
+    if args.weights_in:
+        print(f"Loading weights from {args.weights_in}...")
+        if os.path.isfile(args.weights_in):
+            state = torch.load(args.weights_in, map_location="cpu")
+            if isinstance(state, dict) and "state_dict" in state:
+                state = state["state_dict"]
+            
+            msg = model.load_state_dict(state, strict=False)
+            print(f"Loaded weights with msg: {msg}")
+        else:
+            print(f"⚠️ Warning: Weights file not found at {args.weights_in}")
 
-    print("==> Starting Supervised Training (Brain Waking)...")
+    dataset = ImageFolderDataset(args.data_dir, (args.height, args.width))
+    
+    use_pin_memory = (device.type == "cuda")
+    
+    loader = DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.num_workers,
+        pin_memory=use_pin_memory,
+        drop_last=True,
+    )
+
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+
+    # AMP는 CUDA에서만 활성화
+    use_amp = args.fp16 and (device.type == "cuda")
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+    
+    if args.fp16 and not use_amp:
+        print("Notice: --fp16 requested but running on non-CUDA device. FP16 disabled.")
+
     model.train()
-
     for epoch in range(args.epochs):
-        epoch_loss = 0
-        pbar = tqdm(loader, desc=f"Epoch {epoch+1}/{args.epochs}")
+        epoch_loss = 0.0
+        pbar = tqdm(loader, desc=f"Epoch {epoch + 1}/{args.epochs}")
         
-        for imgs, labels in pbar:
-            imgs = imgs.to(device)
-            labels = labels.to(device) # (B, Hc, Wc) 값은 0~64 사이 정수
+        for batch in pbar:
+            img = batch.to(device)
 
-            optimizer.zero_grad()
+            # [긴급 점검 코드] 첫 번째 배치의 이미지를 저장해서 눈으로 확인
+            if epoch == 0 and pbar.n == 0: # 첫 에폭, 첫 배치일 때만
+                debug_img = (img[0, 0].cpu().numpy() * 255).astype(np.uint8)
+                cv2.imwrite("debug_input.jpg", debug_img)
+                print("📸 Debug image saved to debug_input.jpg Check it NOW!")
+
+            b, _, h, w = img.shape
+
+            h_mats = []
+            for _ in range(b):
+                h_mat = sample_homography(
+                    h,
+                    w,
+                    args.max_translate,
+                    args.max_rotate,
+                    args.max_scale,
+                    args.max_perspective,
+                )
+                h_mats.append(torch.from_numpy(h_mat).float())
+            h_mats = torch.stack(h_mats).to(device)
+
+            # [Cross-Platform] Mac/Windows 자동 처리
+            img_warp = warp_tensor(img, h_mats, mode="bilinear")
+
+            optimizer.zero_grad(set_to_none=True)
             
-            # Forward
-            semi, _ = model(imgs) # semi: (B, 65, Hc, Wc)
-            
-            # Loss 계산 (Supervised)
-            loss = criterion(semi, labels)
-            
-            loss.backward()
-            optimizer.step()
-            
+            # Autocast context (Mac에서는 자동 비활성)
+            with torch.cuda.amp.autocast(enabled=use_amp):
+                semi, desc = model(img)
+                semi_w, desc_w = model(img_warp)
+
+                heatmap = semi_to_heatmap(semi)
+                heatmap_w = semi_to_heatmap(semi_w)
+
+                heatmap_w_from_orig = warp_tensor(
+                    heatmap.unsqueeze(1),
+                    h_mats,
+                    mode="bilinear",
+                ).squeeze(1)
+
+                det_loss = F.mse_loss(heatmap_w_from_orig, heatmap_w)
+
+                desc = normalize_desc(desc)
+                desc_w = normalize_desc(desc_w)
+
+                desc_w_from_orig = warp_tensor(
+                    desc, h_mats, mode="bilinear"
+                )
+                
+                heatmap_w_down = F.avg_pool2d(heatmap_w.unsqueeze(1), 8).squeeze(1)
+                weight = heatmap_w_down.clamp(min=0.0, max=1.0).unsqueeze(1)
+
+                # [Mode Collapse 방지]
+                safe_weight = weight + 0.1 
+                
+                cos_sim = (desc_w_from_orig * desc_w).sum(dim=1, keepdim=True)
+                desc_loss_term = (1.0 - cos_sim) * safe_weight
+                desc_loss = desc_loss_term.sum() / (safe_weight.sum() + 1e-6)
+
+                loss = args.det_weight * det_loss + args.desc_weight * desc_loss
+
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+
             epoch_loss += loss.item()
-            pbar.set_postfix({'loss': f"{loss.item():.5f}"})
+            pbar.set_postfix({"loss": f"{loss.item():.6f}"})
 
-        print(f"Epoch {epoch+1} Avg Loss: {epoch_loss/len(loader):.5f}")
+        avg_loss = epoch_loss / max(1, len(loader))
+        print(f"Epoch {epoch + 1} avg loss: {avg_loss:.6f}")
 
-    # 저장
+        if (epoch + 1) % args.save_every == 0:
+            out_path = os.path.join(args.output_dir, f"superpoint_epoch_{epoch + 1}.pth")
+            torch.save(model.state_dict(), out_path)
+
     os.makedirs(args.output_dir, exist_ok=True)
-    save_path = os.path.join(args.output_dir, args.weights_out)
-    torch.save(model.state_dict(), save_path)
-    print(f"✅ Training Complete! Model saved to: {save_path}")
+    final_path = os.path.join(args.output_dir, args.weights_out)
+    torch.save(model.state_dict(), final_path)
+    print(f"Saved weights: {final_path}")
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Self-supervised SuperPoint finetuning (Cross-Platform)"
+    )
     parser.add_argument("--data_dir", type=str, required=True)
-    parser.add_argument("--weights_out", type=str, default="superpoint_base_synthetic.pth")
+    parser.add_argument("--weights_in", type=str, default=None)
+    parser.add_argument("--weights_out", type=str, default="superpoint_v2_mobilenet_ft.pth")
     parser.add_argument("--output_dir", type=str, default="checkpoints")
     parser.add_argument("--epochs", type=int, default=10)
-    parser.add_argument("--batch_size", type=int, default=16) # 도형은 가벼워서 배치 키워도 됨
-    parser.add_argument("--lr", type=float, default=0.001)
+    parser.add_argument("--batch_size", type=int, default=4)
+    parser.add_argument("--lr", type=float, default=5e-5)
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--num_workers", type=int, default=4)
-    parser.add_argument("--device", type=str, default="auto")
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="auto",
+        choices=["auto", "cuda", "mps", "cpu"],
+        help="auto picks cuda > mps > cpu",
+    )
+    parser.add_argument("--fp16", action="store_true")
     parser.add_argument("--seed", type=int, default=42)
-    
-    args = parser.parse_args()
+
+    parser.add_argument("--max_translate", type=float, default=0.1)
+    parser.add_argument("--max_rotate", type=float, default=10.0)
+    parser.add_argument("--max_scale", type=float, default=0.1)
+    parser.add_argument("--max_perspective", type=float, default=0.02)
+
+    parser.add_argument("--det_weight", type=float, default=1.0)
+    parser.add_argument("--desc_weight", type=float, default=0.5)
+    parser.add_argument("--save_every", type=int, default=1)
+
+    return parser.parse_args()
+
+
+if __name__ == "__main__":
+    args = parse_args()
+    os.makedirs(args.output_dir, exist_ok=True)
     train(args)
