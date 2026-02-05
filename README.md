@@ -140,12 +140,13 @@ ATE는 공개 데이터셋에서의 평균 절대 궤적 오차를 의미한다.
 
 ## 7.1 학습 (Supervised Training)
 
-라벨(.npz) 기반의 **지도학습 스크립트**를 제공합니다. 자세한 내용은
-`docs/TRAINING_KO.md`를 참고하세요.
+라벨(.npz) 기반의 **지도학습 스크립트**는 `scripts/train_synthetic.py`이며,
+KITTI 데이터를 이용한 **지도학습 스크립트**는 `scripts/train_superpoint.py`입니다.
+자세한 내용은 `docs/TRAINING_KO.md`를 참고하세요.
 
 간단 실행 예시:
 ```bash
-python scripts/train_superpoint.py \
+python scripts/train_synthetic.py \
   --data_dir train_data/seq01 \
   --epochs 10 \
   --batch_size 16 \

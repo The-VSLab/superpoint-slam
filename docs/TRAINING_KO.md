@@ -1,6 +1,7 @@
 # SuperPoint v2 (MobileNet) 학습 가이드
 
-이 레포는 **라벨(.npz) 기반 지도학습** 스크립트를 제공합니다. 아래 가이드는 `scripts/train_superpoint.py`에 맞춰 작성되었습니다.
+이 레포는 **라벨(.npz) 기반 지도학습** 스크립트를 제공합니다. 아래 가이드는 `scripts/train_synthetic.py`에 맞춰 작성되었습니다.
+KITTI 데이터를 이용한 **지도학습 스크립트**는 `scripts/train_superpoint.py`를 참고하세요.
 
 ## 1) 개요
 - **방법:** 이미지와 대응되는 키포인트 라벨(.npz)을 사용해 Detector를 **CrossEntropy**로 학습합니다.
@@ -29,7 +30,7 @@ train_data/
 
 ## 3) 실행 방법
 ```bash
-python scripts/train_superpoint.py \
+python scripts/train_synthetic.py \
   --data_dir train_data/seq01 \
   --epochs 10 \
   --batch_size 16 \
