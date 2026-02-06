@@ -4,7 +4,7 @@
 
 ```
 superpoint-slam-feat-63/
-├── 📄 py_superpoint.py          ← 특징점 추출 (변경 없음)
+├── 📄 scripts/py_superpoint.py  ← 특징점 추출 (실행 스크립트)
 ├── 📄 matcher_main.py           ← 👈 여기서 매칭 실행
 ├── 📁 matcher_module/           ← GPU 매칭 모듈 (새로 추가)
 │   ├── btmatcher.py             ← BT-Matcher 구현
@@ -25,13 +25,39 @@ superpoint-slam-feat-63/
 ### 단계 1️⃣: 특징점 추출 (SuperPoint)
 
 ```bash
-python py_superpoint.py --input assets/icl_snippet/ --save_npy
+python scripts/py_superpoint.py --input assets/icl_snippet/ --save_npy
+```
+
+또는 통합 CLI 사용:
+```bash
+python scripts/superpoint_app.py --mode demo --input assets/icl_snippet/ --weights <WEIGHTS_PATH> --save_npy
+```
+
+장치 선택 예시:
+```bash
+python scripts/superpoint_app.py --mode demo --input assets/icl_snippet/ --weights <WEIGHTS_PATH> --device auto
+python scripts/superpoint_app.py --mode demo --input assets/icl_snippet/ --weights <WEIGHTS_PATH> --device cuda
 ```
 
 ✅ 결과: `results_npy/` 폴더에 파일 생성
 - `frame_00001_pts.npy` (특징점 좌표)
 - `frame_00001_desc.npy` (특징점 설명자)
 - `frame_00001_heatmap.npy` (신뢰도)
+
+---
+
+## 🔧 모듈 경로 설정 (중요)
+
+본 프로젝트는 루트 기준 패키지(`models/`, `frontend/`, `tracking/`, `io_utils/`)를 사용합니다.  
+다음 중 하나를 만족해야 합니다.
+
+1. **프로젝트 루트에서 실행**
+   - 예: `python scripts/py_superpoint.py ...`
+2. **PYTHONPATH 설정**
+```bash
+export PYTHONPATH=.
+python scripts/py_superpoint.py --input assets/icl_snippet/ --save_npy
+```
 
 ### 단계 2️⃣: 시스템 테스트 (선택사항)
 
@@ -45,6 +71,14 @@ python test_matching.py
 
 ```bash
 python matcher_main.py --npy_dir results_npy --output_dir matching_results
+```
+
+---
+
+## 🔁 통합 CLI로 SLAM 실행
+
+```bash
+python scripts/superpoint_app.py --mode slam --input <VIDEO_PATH> --weights <WEIGHTS_PATH> --resize 640 480
 ```
 
 ✅ 결과: `matching_results/` 폴더 생성
@@ -112,7 +146,7 @@ print(f"좋은 매칭: {np.sum(inlier_mask)}")
 | `CUDA out of memory` | `--no_geometric_test` 옵션 추가 또는 CPU 사용 |
 | 매칭 개수가 너무 적음 | `--nn_thresh 0.9` 로 더 관대하게 설정 |
 | 매칭 개수가 너무 많음 | `--nn_thresh 0.5` 로 더 엄격하게 설정 |
-| `results_npy` 폴더가 없음 | 먼저 `py_superpoint.py` 실행해서 특징점 추출 |
+| `results_npy` 폴더가 없음 | 먼저 `scripts/py_superpoint.py` 실행해서 특징점 추출 |
 
 ---
 
@@ -185,7 +219,7 @@ print(f"신뢰도 높은 매칭: {np.sum(inlier_mask)}/{len(matches)}")
 A: 아니요! 전혀 수정할 필요 없습니다. matcher_main.py가 별도로 작동합니다.
 
 **Q: 자신의 이미지로 시도하려면?**
-A: `py_superpoint.py --input <이미지_폴더> --save_npy` 실행 후 matcher_main.py 실행
+A: `scripts/py_superpoint.py --input <이미지_폴더> --save_npy` 실행 후 matcher_main.py 실행
 
 **Q: GPU가 없으면?**
 A: CPU로도 작동합니다. (다만 느림) 자동으로 GPU가 없으면 CPU 사용
