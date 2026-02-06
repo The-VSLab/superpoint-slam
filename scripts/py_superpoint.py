@@ -22,58 +22,48 @@ myjet = np.array([[0.        , 0.        , 0.5       ],
                   [0.5       , 0.        , 0.        ]])
 
 class SuperPointNetV2(nn.Module):
-    def __init__(self):
+    def __init__(self, head_hidden=256, descriptor_dim=256):
         super(SuperPointNetV2, self).__init__()
-        
-        # 1. MobileNetV2 로드
-        # PyTorch 0.13+에서는 pretrained 대신 weights 파라미터 사용
+
         try:
-            # 최신 PyTorch (0.13+)
             from torchvision.models import MobileNet_V2_Weights
             v2_model = mobilenet_v2(weights=MobileNet_V2_Weights.IMAGENET1K_V1).features
         except (ImportError, AttributeError):
-            # 구버전 PyTorch 호환성
             v2_model = mobilenet_v2(pretrained=True).features
-        
-        # 2. 8배 다운샘플링 지점까지 자르기
-        # Index 0~6까지가 딱 1/8 해상도 지점입니다. (입력 224 -> 출력 28)
+
         self.backbone = nn.Sequential(*list(v2_model.children())[:7])
-        
-        # MobileNetV2의 해당 지점 출력 채널 수는 32입니다.
         in_channels = 32
 
-        # 3. 특징점 검출 헤드 (Detector Head)
-        self.convPa = nn.Conv2d(in_channels, 256, kernel_size=3, stride=1, padding=1)
-        self.convPb = nn.Conv2d(256, 65, kernel_size=1, stride=1, padding=0)
+        # Detector head
+        self.convPa = nn.Conv2d(in_channels, head_hidden, kernel_size=3, stride=1, padding=1)
+        self.convPb = nn.Conv2d(head_hidden, 65, kernel_size=1, stride=1, padding=0)
 
-        # 4. 디스크립터 헤드 (Descriptor Head)
-        self.convDa = nn.Conv2d(in_channels, 256, kernel_size=3, stride=1, padding=1)
-        self.convDb = nn.Conv2d(256, 256, kernel_size=1, stride=1, padding=0)
+        # Descriptor head
+        self.convDa = nn.Conv2d(in_channels, head_hidden, kernel_size=3, stride=1, padding=1)
+        self.convDb = nn.Conv2d(head_hidden, descriptor_dim, kernel_size=1, stride=1, padding=0)
 
     def forward(self, x):
-        # 1채널(흑백) 입력을 3채널로 확장
         if x.shape[1] == 1:
             x = x.repeat(1, 3, 1, 1)
 
-        x = self.backbone(x)  # [배치크기, 32, 높이/8, 너비/8]
+        x = self.backbone(x)
 
-        # 특징점 검출 헤드
         cPa = nn.functional.relu(self.convPa(x))
         semi = self.convPb(cPa)
 
-        # 디스크립터 헤드
         cDa = nn.functional.relu(self.convDa(x))
         desc = self.convDb(cDa)
-        dn = torch.norm(desc, p=2, dim=1, keepdim=True)
-        desc = desc.div(dn)
 
+        dn = torch.norm(desc, p=2, dim=1, keepdim=True).clamp_min(1e-8)
+        desc = desc.div(dn)
         return semi, desc
+
 
 
 class SuperPointFrontend(object):
     """ PyTorch 네트워크를 감싸서 이미지 전처리 및 후처리를 도와주는 클래스 """
     def __init__(self, weights_path=None, nms_dist=4, conf_thresh=0.015, nn_thresh=0.7,
-                 cuda=False):
+                 cuda=False, head_hidden=256, descriptor_dim=256):
         self.name = 'SuperPointV2'
         self.cuda = cuda
         self.nms_dist = nms_dist
@@ -83,7 +73,7 @@ class SuperPointFrontend(object):
         self.border_remove = 4  # 경계에서 이 거리만큼 가까운 점들을 제거
 
         # 추론 모드로 네트워크 로드
-        self.net = SuperPointNetV2()
+        self.net = SuperPointNetV2(head_hidden=head_hidden, descriptor_dim=descriptor_dim)
         if weights_path is not None and os.path.exists(weights_path):
             checkpoint = torch.load(weights_path, map_location='cpu')
             
