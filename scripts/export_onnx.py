@@ -3,10 +3,10 @@ import torch.onnx
 
 # 프로젝트 루트에서 실행할 때를 고려한 경로
 try:
-    from scripts.py_superpoint import SuperPointNetV2
+    from models.superpoint_mobilenet import SuperPointNetV2
 except ImportError:
     # 같은 디렉토리에서 직접 실행하는 경우 대비
-    from py_superpoint import SuperPointNetV2
+    from models.superpoint_mobilenet import SuperPointNetV2
 
 def export_superpoint_onnx(weights_path, output_path, device='cpu'):
     # 1. 모델 초기화 및 가중치 로드

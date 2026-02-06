@@ -195,7 +195,7 @@ def main():
         print("✓ All tests passed! System is ready to use.")
         print("\nNext steps:")
         print("1. Run SuperPoint to extract features:")
-        print("   python py_superpoint.py --input <images> --save_npy")
+        print("   python scripts/py_superpoint.py --input <images> --save_npy")
         print("\n2. Run feature matching:")
         print("   python matcher_main.py --npy_dir results_npy --output_dir matching_results")
         print("\n3. Check results in matching_results/ directory")

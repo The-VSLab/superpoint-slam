@@ -11,9 +11,9 @@ import cv2
 
 # SuperPoint 모델 임포트 (경로에 맞게 수정)
 try:
-    from scripts.py_superpoint import SuperPointNetV2
+    from models.superpoint_mobilenet import SuperPointNetV2
 except ImportError:
-    from py_superpoint import SuperPointNetV2
+    from models.superpoint_mobilenet import SuperPointNetV2
 
 def set_seed(seed):
     random.seed(seed)

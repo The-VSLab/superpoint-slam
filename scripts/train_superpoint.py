@@ -13,9 +13,9 @@ from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
 try:
-    from scripts.py_superpoint import SuperPointNetV2
+    from models.superpoint_mobilenet import SuperPointNetV2
 except ImportError:
-    from py_superpoint import SuperPointNetV2
+    from models.superpoint_mobilenet import SuperPointNetV2
 
 
 def set_seed(seed: int) -> None:
