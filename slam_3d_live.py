@@ -143,6 +143,12 @@ class VisualSLAM3D:
 
             matches = self.matcher.match(self.prev_desc, desc)
 
+            # 디버깅: 특징점 검출 및 매칭 상태 모니터링
+            # - desc_dim: descriptor 차원 수
+            # - kpts: 현재 프레임에서 검출된 특징점 수
+            # - matches: 이전 프레임과 현재 프레임 사이의 매칭된 특징점 쌍의 수
+            print(f"frame {frame_idx}: desc_dim={None if desc is None else desc.shape[0]}, kpts={len(kpts)}, matches={len(matches)}")
+
             if len(matches) > 8:
                 p1 = self.prev_kpts[matches[:, 0], :2].astype(np.float64)
                 p2 = kpts[matches[:, 1], :2].astype(np.float64)
