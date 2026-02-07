@@ -105,8 +105,16 @@ class VisualSLAM3D:
         
         print(f"==> Camera parameters: focal={self.focal:.1f}, cx={self.cx:.1f}, cy={self.cy:.1f}")
 
+        # 가중치 파일에 따라 특징점 신뢰도 임계값 조정
+        # superpoint_v2_mobilenet_kitti.pth는 더 높은 임계값 필요
+        if 'kitti' in weights_path.lower():
+            conf_thresh = 0.05  # KITTI 모델: 더 높은 임계값으로 특징점 수 대폭 감소
+        else:
+            conf_thresh = 0.003  # 일반 모델: 낮은 임계값 유지
+        
+        print(f"==> Using conf_thresh={conf_thresh}")
         print("==> Loading SuperPoint...")
-        self.fe = SuperPointFrontend(weights_path=weights_path, nms_dist=4, conf_thresh=0.003, nn_thresh=0.7, cuda=self.use_cuda)
+        self.fe = SuperPointFrontend(weights_path=weights_path, nms_dist=4, conf_thresh=conf_thresh, nn_thresh=0.7, cuda=self.use_cuda)
         self.matcher = BTMatcher(nn_thresh=nn_thresh, use_cuda=self.use_cuda, mutual=True)
 
         self.prev_frame = None
