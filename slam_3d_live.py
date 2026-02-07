@@ -4,6 +4,7 @@ import cv2
 import torch
 import open3d as o3d
 import os
+import time
 import sys
 
 # 기존 모듈
@@ -100,6 +101,18 @@ class VisualSLAM3D:
         cv2.namedWindow('Processing', cv2.WINDOW_NORMAL)
         cv2.resizeWindow('Processing', 640, 360)
 
+        # =========================
+        # Benchmark / Stats
+        # =========================
+        self.sp_ms_list = []           # SuperPoint 특징점 추출 시간 (ms)
+        self.match_ms_list = []        # 특징점 매칭 시간 (ms)
+        self.total_ms_list = []        # 전체 프레임 처리 시간 (ms)
+        self.kpts_list = []            # 프레임별 검출된 특징점 수
+        self.matches_list = []         # 프레임별 매칭된 특징점 쌍의 수
+        self.inliers_list = []         # RANSAC 후 남은 유효한 매칭 수
+        self.inlier_ratio_list = []    # 전체 매칭 중 유효한 매칭의 비율
+        self.map_points_added_list = [] # 각 프레임에서 추가된 3D 맵 포인트 수
+
     def triangulate(self, R, t, p1, p2):
         P1 = self.K @ np.hstack((np.eye(3), np.zeros((3, 1))))
         P2 = self.K @ np.hstack((R, t))
@@ -128,9 +141,15 @@ class VisualSLAM3D:
             img_gray = cv2.cvtColor(img_curr, cv2.COLOR_BGR2GRAY)
             img_masked = self.mask_car(img_gray.copy())
             img_fe = (img_masked.astype(np.float32) / 255.0)
+            frame_t0 = time.perf_counter()
 
             # 특징점 추출
+
+            # Superpoint 추론 시간 측정
+            # perf_counter가 time보다 짧은 구간 측정에서 더 정확
+            sp_t0 = time.perf_counter()
             pts, desc, _ = self.fe.run(img_fe)
+            sp_t1 = time.perf_counter()
             kpts = pts[:2, :].T if pts.shape[1] > 0 else np.empty((0, 2))
 
             if self.prev_frame is None:
@@ -141,7 +160,15 @@ class VisualSLAM3D:
                 frame_idx += 1
                 continue
 
+            # Matcher 시간 측정
+            match_t0 = time.perf_counter()
             matches = self.matcher.match(self.prev_desc, desc)
+            match_t1 = time.perf_counter()
+
+            # 프레임별 기본값 초기화(recoverPose 성공시에만 값이 갱신/ 실패하면 0 유지)
+            inliers = 0
+            inliner_ratio = 0.0
+            map_points_added = 0
 
             # 디버깅: 특징점 검출 및 매칭 상태 모니터링
             # - desc_dim: descriptor 차원 수
@@ -160,13 +187,14 @@ class VisualSLAM3D:
                 if E is not None:
                     _, R, t, mask = cv2.recoverPose(E, p2, p1, self.K)
                     inliers = int(mask.ravel().sum()) if mask is not None else 0
+                    inlier_ratio = inliers / max(len(matches), 1)
                     t_vec = t[:, 0]
 
                     # 디버깅: SLAM 추적 상태 모니터링
                     # - matches: 초기 특징점 매칭 쌍의 총 개수
                     # - inliers: RANSAC으로 선별된 기하학적으로 유효한 매칭의 수 (mask.ravel().sum())
                     # - t: 현재 프레임의 상대적 이동 벡터 [x,y,z], 소수점 3자리까지 표시하여 가독성 향상
-                    print(f"frame {frame_idx}: matches={len(matches)}, inliers={inliers}, t={t_vec.round(3)}")
+                    print(f"frame {frame_idx}: matches={len(matches)}, inliers={inliers}, ratio={inlier_ratio:.3f}, t={t_vec.round(3)}")
 
                     if np.isfinite(t_vec).all():
                         # --- [안정화 로직: 고속도로 모드] ---
@@ -211,7 +239,9 @@ class VisualSLAM3D:
                                 # 1.8보다 큰 값(더 아래)은 노이즈
                                 valid_ground = world_pts[:, 1] < 1.8
                                 world_pts = world_pts[valid_ground]
-                                
+                                # map_points_added 기록
+                                map_points_added = int(world_pts.shape[0])
+
                                 # 색상 계산
                                 cols = get_height_color(world_pts[:, 1])
                                 
@@ -241,7 +271,24 @@ class VisualSLAM3D:
             cv2.imshow('Processing', img_vis)
 
             if cv2.waitKey(1) & 0xFF == ord('q'): break
-            
+
+            # 프레임 끝 시간
+            frame_t1 = time.perf_counter()
+
+            # ms 계산 + append
+            sp_ms = (sp_t1 - sp_t0) * 1000.0
+            match_ms = (match_t1 - match_t0) * 1000.0
+            total_ms = (frame_t1 - frame_t0) * 1000.0
+
+            self.sp_ms_list.append(sp_ms)
+            self.match_ms_list.append(match_ms)
+            self.total_ms_list.append(total_ms)
+            self.kpts_list.append(int(len(kpts)))
+            self.matches_list.append(int(len(matches)))
+            self.inliers_list.append(int(inliers))
+            self.inlier_ratio_list.append(float(inlier_ratio))
+            self.map_points_added_list.append(int(map_points_added))
+
             self.prev_frame, self.prev_kpts, self.prev_desc = img_gray, kpts, desc
             frame_idx += 1
 
