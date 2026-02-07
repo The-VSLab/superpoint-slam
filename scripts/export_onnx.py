@@ -1,5 +1,12 @@
+import sys
+from pathlib import Path
+
 import torch
 import torch.onnx
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 # 프로젝트 루트에서 실행할 때를 고려한 경로
 try:

@@ -18,6 +18,8 @@ def run_slam(opt):
         target_size=(opt.resize[0], opt.resize[1]),
         nn_thresh=opt.nn_thresh,
         mask_car=opt.mask_car,
+        conf_thresh=opt.slam_conf_thresh,
+        nms_dist=opt.slam_nms_dist,
     )
     slam.process()
 
@@ -61,6 +63,18 @@ def build_parser():
         type=int,
         default=[640, 480],
         help="Resize input frame to [width height] (slam mode)",
+    )
+    parser.add_argument(
+        "--slam_conf_thresh",
+        type=float,
+        default=0.003,
+        help="SLAM 모드용 conf_thresh (기본: 0.003)",
+    )
+    parser.add_argument(
+        "--slam_nms_dist",
+        type=int,
+        default=4,
+        help="SLAM 모드용 NMS 거리 (기본: 4)",
     )
 
     return parser

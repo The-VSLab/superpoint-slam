@@ -53,7 +53,16 @@ def get_height_color(y_vals, y_min=-5.0, y_max=2.0):
     return colors
 
 class VisualSLAM3D:
-    def __init__(self, weights_path, input_path, target_size=(640, 480), nn_thresh=0.7, mask_car=False):
+    def __init__(
+        self,
+        weights_path,
+        input_path,
+        target_size=(640, 480),
+        nn_thresh=0.7,
+        mask_car=False,
+        conf_thresh=0.003,
+        nms_dist=4,
+    ):
         # 1. 장치 결정
         self.device = get_optimal_device()
         self.use_cuda = (self.device == "cuda")
@@ -82,7 +91,13 @@ class VisualSLAM3D:
         print(f"==> Camera Matrix (K):\n{self.K}")
 
         print("==> Loading SuperPoint...")
-        self.fe = SuperPointFrontend(weights_path=weights_path, nms_dist=4, conf_thresh=0.003, nn_thresh=0.7, cuda=self.use_cuda)
+        self.fe = SuperPointFrontend(
+            weights_path=weights_path,
+            nms_dist=nms_dist,
+            conf_thresh=conf_thresh,
+            nn_thresh=nn_thresh,
+            cuda=self.use_cuda,
+        )
         self.matcher = BTMatcher(nn_thresh=nn_thresh, use_cuda=self.use_cuda, mutual=True)
 
         self.prev_frame = None

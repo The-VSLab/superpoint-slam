@@ -1,4 +1,6 @@
 import argparse
+import sys
+from pathlib import Path
 import glob
 import math
 import os
@@ -6,6 +8,10 @@ import random
 from typing import List, Tuple
 
 import cv2
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -215,13 +221,6 @@ def train(args: argparse.Namespace) -> None:
         
         for batch in pbar:
             img = batch.to(device)
-
-            # [긴급 점검 코드] 첫 번째 배치의 이미지를 저장해서 눈으로 확인
-            if epoch == 0 and pbar.n == 0: # 첫 에폭, 첫 배치일 때만
-                debug_img = (img[0, 0].cpu().numpy() * 255).astype(np.uint8)
-                cv2.imwrite("debug_input.jpg", debug_img)
-                print("📸 Debug image saved to debug_input.jpg Check it NOW!")
-
             b, _, h, w = img.shape
 
             h_mats = []
