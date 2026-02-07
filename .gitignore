@@ -37,8 +37,9 @@
 *.out
 *.app
 
-# debug information files
+# Debug information files
 *.dwo
+
 # Python-generated files
 __pycache__/
 *.py[oc]
@@ -46,9 +47,19 @@ build/
 dist/
 wheels/
 *.egg-info
+.pytest_cache/
+.ipynb_checkpoints/
 
 # Virtual environments
-.venv
+.venv/
+
+# Experiment outputs
+logs/
+runs/
+checkpoints/
+results/
+*.pth
+*.pt
 
 # AI Context
 AGENTS.md
@@ -56,3 +67,6 @@ AGENTS.md
 # OS & IDE
 .DS_Store
 .vscode/
+
+# Lock files
+*.lock
