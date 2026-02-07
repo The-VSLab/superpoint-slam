@@ -159,8 +159,15 @@ class VisualSLAM3D:
                 valid_step = False
                 if E is not None:
                     _, R, t, mask = cv2.recoverPose(E, p2, p1, self.K)
+                    inliers = int(mask.ravel().sum()) if mask is not None else 0
                     t_vec = t[:, 0]
-                    
+
+                    # 디버깅: SLAM 추적 상태 모니터링
+                    # - matches: 초기 특징점 매칭 쌍의 총 개수
+                    # - inliers: RANSAC으로 선별된 기하학적으로 유효한 매칭의 수 (mask.ravel().sum())
+                    # - t: 현재 프레임의 상대적 이동 벡터 [x,y,z], 소수점 3자리까지 표시하여 가독성 향상
+                    print(f"frame {frame_idx}: matches={len(matches)}, inliers={inliers}, t={t_vec.round(3)}")
+
                     if np.isfinite(t_vec).all():
                         # --- [안정화 로직: 고속도로 모드] ---
                         # 1. 후진 방지
