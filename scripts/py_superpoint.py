@@ -25,13 +25,18 @@ class SuperPointNetV2(nn.Module):
     def __init__(self, head_hidden=256, descriptor_dim=256):
         super(SuperPointNetV2, self).__init__()
 
+        # 1. MobileNetV2 로드
+        # PyTorch 0.13+에서는 pretrained 대신 weights 파라미터 사용
         try:
             from torchvision.models import MobileNet_V2_Weights
             v2_model = mobilenet_v2(weights=MobileNet_V2_Weights.IMAGENET1K_V1).features
         except (ImportError, AttributeError):
             v2_model = mobilenet_v2(pretrained=True).features
 
+        # 2. 8배 다운샘플링 지점까지 자르기
+        # Index 0~6까지가 딱 1/8 해상도 지점입니다. (입력 224 -> 출력 28)
         self.backbone = nn.Sequential(*list(v2_model.children())[:7])
+        # MobileNetV2의 해당 지점 출력 채널 수는 32
         in_channels = 32
 
         # Detector head
@@ -43,6 +48,7 @@ class SuperPointNetV2(nn.Module):
         self.convDb = nn.Conv2d(head_hidden, descriptor_dim, kernel_size=1, stride=1, padding=0)
 
     def forward(self, x):
+        # 1채널(흑백) 입력을 3채널로 확장
         if x.shape[1] == 1:
             x = x.repeat(1, 3, 1, 1)
 
@@ -51,9 +57,11 @@ class SuperPointNetV2(nn.Module):
         cPa = nn.functional.relu(self.convPa(x))
         semi = self.convPb(cPa)
 
+        # Detector head
         cDa = nn.functional.relu(self.convDa(x))
         desc = self.convDb(cDa)
 
+        # Descriptor head
         dn = torch.norm(desc, p=2, dim=1, keepdim=True).clamp_min(1e-8)
         desc = desc.div(dn)
         return semi, desc

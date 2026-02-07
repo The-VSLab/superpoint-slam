@@ -77,7 +77,8 @@ class VisualSLAM3D:
         self.K = np.array([[self.focal, 0, self.cx], [0, self.focal, self.cy], [0, 0, 1]])
 
         print("==> Loading SuperPoint...")
-        self.fe = SuperPointFrontend(weights_path=weights_path, nms_dist=4, conf_thresh=0.003, nn_thresh=0.7, cuda=self.use_cuda)
+        # descriptor_dim=128로 테스트 후 안정적일 때 head_hidden 256-> 128로 전환예정
+        self.fe = SuperPointFrontend(weights_path=weights_path, nms_dist=4, conf_thresh=0.003, nn_thresh=0.7, cuda=self.use_cuda, head_hidden=256, descriptor_dim=128)
         self.matcher = BTMatcher(nn_thresh=nn_thresh, use_cuda=self.use_cuda, mutual=True)
 
         self.prev_frame = None
