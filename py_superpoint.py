@@ -85,35 +85,12 @@ class SuperPointFrontend(object):
         # 추론 모드로 네트워크 로드
         self.net = SuperPointNetV2()
         if weights_path is not None and os.path.exists(weights_path):
-            checkpoint = torch.load(weights_path, map_location='cpu')
-            
-            # Shape mismatch 무시하고 호환되는 파라미터만 로드
-            model_state = self.net.state_dict()
-            compatible_state = {}
-            for k, v in checkpoint.items():
-                if k in model_state and model_state[k].shape == v.shape:
-                    compatible_state[k] = v
-            
-            self.net.load_state_dict(compatible_state, strict=False)
-
-            # 로드된 파라미터 비율 로깅 (디버깅 및 검증용)
-            total_params = len(model_state)
-            loaded_params = len(compatible_state)
-            print(f"[SuperPointFrontend] Loaded {loaded_params}/{total_params} parameters "
-                  f"from '{weights_path}' (shape-matched only).")
-
-        # 디바이스 선택 (weights 로드 여부와 무관하게 일관되게 적용)
-        if self.cuda and torch.cuda.is_available():
-            self.device = torch.device("cuda")
-            print("   -> Using NVIDIA GPU (CUDA)")
-        elif torch.backends.mps.is_available():
-            self.device = torch.device("mps")
-            print("   -> Using Apple Silicon GPU (MPS)")
-        else:
-            self.device = torch.device("cpu")
-            print("   -> Using CPU")
-
-        self.net = self.net.to(self.device)
+            if cuda:
+                self.net.load_state_dict(torch.load(weights_path))
+                self.net = self.net.cuda()
+            else:
+                self.net.load_state_dict(torch.load(weights_path,
+                                     map_location=lambda storage, loc: storage))
         self.net.eval()
 
     def nms_fast(self, in_corners, H, W, dist_thresh):
@@ -197,8 +174,8 @@ class SuperPointFrontend(object):
         inp = (inp.reshape(1, H, W))
         inp = torch.from_numpy(inp)
         inp = inp.view(1, 1, H, W)
-        # 모델 파라미터와 동일 디바이스로 이동 (CUDA/MPS/CPU 모두 안전)
-        inp = inp.to(self.device)
+        if self.cuda:
+            inp = inp.cuda()
         # 네트워크 순전파
         with torch.no_grad():
             outs = self.net.forward(inp)
@@ -245,7 +222,8 @@ class SuperPointFrontend(object):
             samp_pts = samp_pts.transpose(0, 1).contiguous()
             samp_pts = samp_pts.view(1, 1, -1, 2)
             samp_pts = samp_pts.float()
-            samp_pts = samp_pts.to(self.device)
+            if self.cuda:
+                samp_pts = samp_pts.cuda()
             desc = torch.nn.functional.grid_sample(coarse_desc, samp_pts)
             desc = desc.data.cpu().numpy().reshape(D, -1)
             desc /= np.linalg.norm(desc, axis=0)[np.newaxis, :]
