@@ -1,0 +1,23 @@
+# [데이터 및 경로]
+data_dir: dataset/training
+output_dir: checkpoints
+height: 480
+width: 640
+
+# [학습 하이퍼파라미터]
+epochs: 20
+batch_size: 4
+lr: 1.0e-4
+num_workers: 8
+fp16: true
+
+# [손실 가중치]
+det_weight: 1.0
+desc_weight: 2.0
+sup_weight: 25.0
+dustbin_weight: 0.05
+
+# [누락된 데이터 증강 파라미터 - 반드시 추가]
+max_rotate: 15.0       # 최대 회전 각도
+max_scale: 0.1        # 최대 확대/축소 비율
+max_perspective: 0.05  # 최대 원근 변형 강도
