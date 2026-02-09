@@ -23,7 +23,7 @@ import cv2
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # SuperPoint 모듈
-from scripts.py_superpoint import SuperPointFrontend
+from frontend.superpoint_frontend import SuperPointFrontend
 
 # Matcher 모듈
 from matcher_module import BTMatcher, draw_matches, compute_fundamental_matrix

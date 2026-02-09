@@ -32,6 +32,34 @@ MobileNet 기반의 경량 SuperPoint 프론트엔드를 설계하고,
 
 ---
 
+## 실행 환경 (Execution)
+
+이 저장소는 루트 기준 패키지(`models/`, `frontend/`, `tracking/`, `io_utils/`)를 사용합니다.  
+다음 중 하나를 만족해야 합니다.
+
+1. 프로젝트 루트에서 실행
+2. `PYTHONPATH` 설정
+```bash
+export PYTHONPATH=.
+```
+
+---
+
+## 통합 실행 (CLI)
+
+```bash
+# Demo 모드
+python scripts/superpoint_app.py --mode demo --input <IMG_DIR|VIDEO|camera> --weights <WEIGHTS_PATH>
+
+# SLAM 모드
+python scripts/superpoint_app.py --mode slam --input <VIDEO_PATH> --weights <WEIGHTS_PATH> --resize 640 480
+```
+
+Demo 모드에서 `--save_npy`를 쓰면 결과는 `npy_outputs/`에 저장됩니다.  
+SLAM 모드 결과는 `path_final/final_slam_map.ply`로 저장됩니다.
+
+---
+
 ## 2. 연구 동기 (Motivation)
 
 본 연구의 동기는 다음과 같다.

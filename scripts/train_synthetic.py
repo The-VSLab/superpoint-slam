@@ -1,4 +1,6 @@
 import argparse
+import sys
+from pathlib import Path
 import glob
 import os
 import random
@@ -9,11 +11,15 @@ from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 import cv2
 
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
 # SuperPoint 모델 임포트 (경로에 맞게 수정)
 try:
-    from scripts.py_superpoint import SuperPointNetV2
+    from models.superpoint_mobilenet import SuperPointNetV2
 except ImportError:
-    from py_superpoint import SuperPointNetV2
+    from models.superpoint_mobilenet import SuperPointNetV2
 
 def set_seed(seed):
     random.seed(seed)

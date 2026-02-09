@@ -1,4 +1,6 @@
 import argparse
+import sys
+from pathlib import Path
 import glob
 import math
 import os
@@ -6,6 +8,10 @@ import random
 from typing import List, Tuple
 
 import cv2
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -13,9 +19,9 @@ from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
 try:
-    from scripts.py_superpoint import SuperPointNetV2
+    from models.superpoint_mobilenet import SuperPointNetV2
 except ImportError:
-    from py_superpoint import SuperPointNetV2
+    from models.superpoint_mobilenet import SuperPointNetV2
 
 
 def set_seed(seed: int) -> None:
@@ -216,12 +222,10 @@ def train(args: argparse.Namespace) -> None:
         
         for batch in pbar:
             img = batch.to(device)
-
             if args.save_debug_image and epoch == 0 and pbar.n == 0:
                 debug_img = (img[0, 0].cpu().numpy() * 255).astype(np.uint8)
                 cv2.imwrite("debug_input.jpg", debug_img)
                 print("Debug image saved to debug_input.jpg")
-
             b, _, h, w = img.shape
 
             h_mats = []

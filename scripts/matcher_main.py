@@ -3,7 +3,7 @@
 SuperPoint Feature Matching Program with GPU-accelerated BT-Matcher
 
 이 프로그램은 다음 기능을 수행합니다:
-1. py_superpoint.py에서 추출한 특징점과 디스크립터 로드
+1. scripts/py_superpoint.py에서 추출한 특징점과 디스크립터 로드
 2. GPU 기반 BT-Matcher를 사용하여 매칭 수행
 3. RANSAC을 이용한 기하학적 검증
 4. 매칭 결과 시각화 및 저장
