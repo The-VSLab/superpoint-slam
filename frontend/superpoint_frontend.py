@@ -184,6 +184,11 @@ class SuperPointFrontend(object):
         toremoveH = np.logical_or(pts[1, :] < bord, pts[1, :] >= (H - bord))
         toremove = np.logical_or(toremoveW, toremoveH)
         pts = pts[:, ~toremove]
+        # 점 개수 변경 코드
+        # 상위 600개 특징점만 유지
+        max_points = 600
+        if pts.shape[1] > max_points:
+            pts = pts[:, :max_points]
         # --- 디스크립터 처리
         D = coarse_desc.shape[1]
         if pts.shape[1] == 0:
