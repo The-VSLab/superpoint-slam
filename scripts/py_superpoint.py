@@ -242,6 +242,13 @@ class SuperPointFrontend(object):
         pts, _ = self.nms_fast(pts, H, W, dist_thresh=self.nms_dist)  # NMS 적용
         inds = np.argsort(pts[2,:])
         pts = pts[:,inds[::-1]]  # 신뢰도로 정렬
+        
+        #점 개수 변경 코드
+        # 상위 600개 특징점만 유지
+        max_points = 600
+        if pts.shape[1] > max_points:
+            pts = pts[:, :max_points]
+        
         # 경계선을 따라 있는 점들 제거
         bord = self.border_remove
         toremoveW = np.logical_or(pts[0, :] < bord, pts[0, :] >= (W-bord))
