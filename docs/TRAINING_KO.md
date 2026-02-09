@@ -56,6 +56,7 @@ checkpoints/superpoint_base_synthetic.pth
 ```bash
 python scripts/superpoint_app.py --mode slam --input your_video.mp4 --weights checkpoints/superpoint_base_synthetic.pth
 ```
+결과는 `path_final/final_slam_map.ply`로 저장됩니다.
 
 ## 6) 참고
 - 이 스크립트는 **라벨(.npz) 기반 지도학습**을 위한 기본 베이스입니다.

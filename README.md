@@ -55,6 +55,9 @@ python scripts/superpoint_app.py --mode demo --input <IMG_DIR|VIDEO|camera> --we
 python scripts/superpoint_app.py --mode slam --input <VIDEO_PATH> --weights <WEIGHTS_PATH> --resize 640 480
 ```
 
+Demo 모드에서 `--save_npy`를 쓰면 결과는 `npy_outputs/`에 저장됩니다.  
+SLAM 모드 결과는 `path_final/final_slam_map.ply`로 저장됩니다.
+
 ---
 
 ## 2. 연구 동기 (Motivation)
