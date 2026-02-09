@@ -53,7 +53,22 @@ def get_height_color(y_vals, y_min=-5.0, y_max=2.0):
     return colors
 
 class VisualSLAM3D:
-    def __init__(self, weights_path, input_path, nn_thresh=0.7):
+    def __init__(
+        self,
+        weights_path,
+        input_path,
+        nn_thresh=0.7,
+        mask_car=False,
+        conf_thresh=0.01,
+        nms_dist=4,
+        min_inliers=30,
+        min_inlier_ratio=0.3,
+        min_depth=1.0,
+        max_depth=80.0,
+        max_points_per_frame=1200,
+        max_kpts=1200,
+        voxel_size=0.15,
+    ):
         # 1. 장치 결정
         self.device = get_optimal_device()
         # SuperPointFrontend는 내부 설계상 True/False(CUDA 사용여부)를 받는 경우가 많으므로 호환성 유지
@@ -63,21 +78,56 @@ class VisualSLAM3D:
 
         self.input_path = input_path
         
+        # 비디오의 실제 해상도 읽기
         cap = cv2.VideoCapture(input_path)
-        if not cap.isOpened(): raise ValueError(f"Error: {input_path}")
-        self.W, self.H = 640, 480
+        if not cap.isOpened(): 
+            raise ValueError(f"Error: Cannot open video file {input_path}")
+        
+        # 실제 비디오 해상도 읽기
+        orig_W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        orig_H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         cap.release()
         
-        print(f"==> Resolution: {self.W}x{self.H}")
+        # SuperPoint는 8의 배수 해상도가 필요하므로 조정
+        # 종횡비를 유지하면서 8의 배수로 맞춤
+        target_max_dim = 640  # 최대 해상도 제한 (성능 고려)
+        scale = min(target_max_dim / max(orig_W, orig_H), 1.0)
+        self.W = int(orig_W * scale)
+        self.H = int(orig_H * scale)
+        
+        # 8의 배수로 반올림
+        self.W = ((self.W + 4) // 8) * 8
+        self.H = ((self.H + 4) // 8) * 8
+        
+        print(f"==> Original resolution: {orig_W}x{orig_H}")
+        print(f"==> Processing resolution: {self.W}x{self.H} (8의 배수로 조정)")
 
-        # 카메라 파라미터 (일반적인 블랙박스 화각)
-        self.focal = max(self.W, self.H) * 0.8
+        # 카메라 파라미터 설정 (일반 MP4 영상에 적합)
+        # FOV 기반 추정: 일반적인 스마트폰/웹캠은 약 60-70도 FOV
+        # focal = (W or H) / (2 * tan(FOV/2))
+        # 60도 FOV 기준: focal ≈ W * 0.866
+        # 70도 FOV 기준: focal ≈ W * 0.7
+        # 일반적인 값으로 W와 H의 평균 사용
+        avg_dim = (self.W + self.H) / 2.0
+        # 일반적인 카메라의 경우 focal length는 이미지 크기의 0.7~1.0배
+        # 더 보수적으로 0.8~0.9 사용 (KITTI는 약 0.7 정도였음)
+        self.focal = avg_dim * 0.85  # 일반 MP4 영상에 적합한 값
         self.cx = self.W / 2.0
         self.cy = self.H / 2.0
-        self.K = np.array([[self.focal, 0, self.cx], [0, self.focal, self.cy], [0, 0, 1]])
+        self.K = np.array([[self.focal, 0, self.cx], 
+                          [0, self.focal, self.cy], 
+                          [0, 0, 1]], dtype=np.float64)
+        
+        print(f"==> Camera parameters: focal={self.focal:.1f}, cx={self.cx:.1f}, cy={self.cy:.1f}")
 
         print("==> Loading SuperPoint...")
-        self.fe = SuperPointFrontend(weights_path=weights_path, nms_dist=4, conf_thresh=0.003, nn_thresh=0.7, cuda=self.use_cuda)
+        self.fe = SuperPointFrontend(
+            weights_path=weights_path,
+            nms_dist=nms_dist,
+            conf_thresh=conf_thresh,
+            nn_thresh=0.7,
+            cuda=self.use_cuda,
+        )
         self.matcher = BTMatcher(nn_thresh=nn_thresh, use_cuda=self.use_cuda, mutual=True)
 
         self.prev_frame = None
@@ -92,8 +142,19 @@ class VisualSLAM3D:
         self.traj_points = []
         self.last_t_vec = np.array([0.0, 0.0, 1.0]) 
 
+        self.min_inliers = min_inliers
+        self.min_inlier_ratio = min_inlier_ratio
+        self.min_depth = min_depth
+        self.max_depth = max_depth
+        self.max_points_per_frame = max_points_per_frame
+        self.max_kpts = max_kpts
+        self.voxel_size = voxel_size
+
         self.save_dir = "path_final"
         if not os.path.exists(self.save_dir): os.makedirs(self.save_dir)
+        
+        # 차량 대시보드 마스킹 옵션 (KITTI 데이터셋용, 일반 MP4는 False 권장)
+        self.mask_car_enabled = mask_car
 
         # 실시간 2D 확인창
         cv2.namedWindow('Processing', cv2.WINDOW_NORMAL)
@@ -123,14 +184,27 @@ class VisualSLAM3D:
             ret, frame = cap.read()
             if not ret: break
 
-            img_curr = cv2.resize(frame, (self.W, self.H))
+            # 설정된 해상도로 리사이즈 (종횡비 유지 고려)
+            img_curr = cv2.resize(frame, (self.W, self.H), interpolation=cv2.INTER_AREA)
             img_gray = cv2.cvtColor(img_curr, cv2.COLOR_BGR2GRAY)
-            img_masked = self.mask_car(img_gray.copy())
+            # 차량 마스킹은 선택적 (KITTI 데이터셋용)
+            if self.mask_car_enabled:
+                img_masked = self.mask_car(img_gray.copy())
+            else:
+                img_masked = img_gray
             img_fe = (img_masked.astype(np.float32) / 255.0)
 
             # 특징점 추출
             pts, desc, _ = self.fe.run(img_fe)
-            kpts = pts[:2, :].T if pts.shape[1] > 0 else np.empty((0, 2))
+            if pts.shape[1] > 0:
+                if pts.shape[1] > self.max_kpts:
+                    order = np.argsort(pts[2, :])[::-1]
+                    keep = order[: self.max_kpts]
+                    pts = pts[:, keep]
+                    desc = desc[:, keep]
+                kpts = pts[:2, :].T
+            else:
+                kpts = np.empty((0, 2))
 
             if self.prev_frame is None:
                 self.prev_frame, self.prev_kpts, self.prev_desc = img_gray, kpts, desc
@@ -140,9 +214,13 @@ class VisualSLAM3D:
                 frame_idx += 1
                 continue
 
-            matches = self.matcher.match(self.prev_desc, desc)
+            if self.prev_desc is not None and desc is not None:
+                matches = self.matcher.match(self.prev_desc, desc)
+            else:
+                matches = []
+                print("⚠️ 특징점이 검출되지 않아 매칭을 건너뜁니다.")
 
-            if len(matches) > 8:
+            if len(matches) >= max(self.min_inliers, 8):
                 p1 = self.prev_kpts[matches[:, 0], :2].astype(np.float64)
                 p2 = kpts[matches[:, 1], :2].astype(np.float64)
                 
@@ -151,10 +229,20 @@ class VisualSLAM3D:
                 
                 valid_step = False
                 if E is not None:
-                    _, R, t, mask = cv2.recoverPose(E, p2, p1, self.K)
+                    _, R, t, pose_mask = cv2.recoverPose(E, p2, p1, self.K)
                     t_vec = t[:, 0]
+                    inliers = int(pose_mask.sum()) if pose_mask is not None else 0
+                    inlier_ratio = inliers / max(len(matches), 1)
+                    if inliers < self.min_inliers or inlier_ratio < self.min_inlier_ratio:
+                        pose_mask = None
                     
-                    if np.isfinite(t_vec).all():
+                    if pose_mask is None:
+                        valid_step = False
+                        p1_m, p2_m = np.empty((0, 2)), np.empty((0, 2))
+                    else:
+                        p1_m, p2_m = p1[pose_mask.ravel().astype(bool)], p2[pose_mask.ravel().astype(bool)]
+                    
+                    if np.isfinite(t_vec).all() and len(p1_m) > 0:
                         # --- [안정화 로직: 고속도로 모드] ---
                         # 1. 후진 방지
                         if t_vec[2] < 0: t_vec = -t_vec; R = R.T
@@ -179,31 +267,38 @@ class VisualSLAM3D:
                         valid_step = True
                         
                         # 맵 생성 (삼각측량)
-                        mask = mask.ravel().astype(bool)
-                        p1_m, p2_m = p1[mask], p2[mask]
-                        if len(p1_m) > 0:
-                            local_pts = self.triangulate(R, t_vec.reshape(3,1), p1_m, p2_m)
+                        local_pts = self.triangulate(R, t_vec.reshape(3,1), p1_m, p2_m)
+                        
+                        # 필터링
+                        valid = (
+                            (local_pts[:, 2] > self.min_depth)
+                            & (local_pts[:, 2] < self.max_depth)
+                            & (np.abs(local_pts[:, 0]) < 100)
+                            & (np.abs(local_pts[:, 1]) < 50)
+                            & np.isfinite(local_pts).all(axis=1)
+                        )
+                        local_pts = local_pts[valid]
+                        
+                        if len(local_pts) > 0:
+                            if len(local_pts) > self.max_points_per_frame:
+                                sample_idx = np.random.choice(
+                                    len(local_pts), self.max_points_per_frame, replace=False
+                                )
+                                local_pts = local_pts[sample_idx]
+                            world_pts = (self.cur_pose[:3, :3] @ local_pts.T).T + self.cur_pose[:3, 3]
                             
-                            # 필터링
-                            valid = (local_pts[:, 2] > 1.0) & (local_pts[:, 2] < 200) & \
-                                    (np.abs(local_pts[:, 0]) < 100) & (np.abs(local_pts[:, 1]) < 50)
-                            local_pts = local_pts[valid]
+                            # [청소] 바닥 아래 지하 노이즈 제거
+                            # OpenCV 좌표계: +Y가 아래. 바닥은 약 +1.6 ~ 1.7
+                            # 1.8보다 큰 값(더 아래)은 노이즈
+                            valid_ground = world_pts[:, 1] < 1.8
+                            world_pts = world_pts[valid_ground]
                             
-                            if len(local_pts) > 0:
-                                world_pts = (self.cur_pose[:3, :3] @ local_pts.T).T + self.cur_pose[:3, 3]
-                                
-                                # [청소] 바닥 아래 지하 노이즈 제거
-                                # OpenCV 좌표계: +Y가 아래. 바닥은 약 +1.6 ~ 1.7
-                                # 1.8보다 큰 값(더 아래)은 노이즈
-                                valid_ground = world_pts[:, 1] < 1.8
-                                world_pts = world_pts[valid_ground]
-                                
-                                # 색상 계산
-                                cols = get_height_color(world_pts[:, 1])
-                                
-                                # 저장
-                                self.all_map_points.append(world_pts)
-                                self.all_map_colors.append(cols)
+                            # 색상 계산
+                            cols = get_height_color(world_pts[:, 1])
+                            
+                            # 저장
+                            self.all_map_points.append(world_pts)
+                            self.all_map_colors.append(cols)
 
                 # 실패 시 관성 주행
                 if not valid_step:
@@ -252,7 +347,7 @@ class VisualSLAM3D:
         
         # [중요] 점 크기 조절 안됨 -> Voxel Downsample로 밀도 조절
         # 너무 촘촘하면 보기 싫고, 너무 듬성하면 휑함. 적당히 0.1m 간격으로 정리
-        pcd = pcd.voxel_down_sample(voxel_size=0.1)
+        pcd = pcd.voxel_down_sample(voxel_size=self.voxel_size)
 
         # 3. 경로선 (Trajectory Line)
         traj_pts = np.array(self.traj_points)
@@ -280,7 +375,7 @@ class VisualSLAM3D:
         
         # 배경색: 영상처럼 검은색(Dark)이 포인트가 제일 잘 보임
         vis.get_render_option().background_color = np.asarray([0.05, 0.05, 0.05])
-        vis.get_render_option().point_size = 3.0 # 점 크기 적당히
+        vis.get_render_option().point_size = 2.5
         
         for geom in vis_geoms:
             vis.add_geometry(geom)
@@ -300,9 +395,47 @@ class VisualSLAM3D:
         print(" -> Map saved.")
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--input', type=str, required=True)
-    parser.add_argument('--weights', type=str, required=True)
+    parser = argparse.ArgumentParser(description='SuperPoint-based 3D Visual SLAM')
+    parser.add_argument('--input', type=str, required=True,
+                        help='Input video file path (MP4, AVI, etc.)')
+    parser.add_argument('--weights', type=str, required=True,
+                        help='Path to SuperPoint model weights (.pth file)')
+    parser.add_argument('--nn_thresh', type=float, default=0.7,
+                        help='Descriptor matching threshold (default: 0.7)')
+    parser.add_argument('--conf_thresh', type=float, default=0.01,
+                        help='SuperPoint confidence threshold (default: 0.01)')
+    parser.add_argument('--max_kpts', type=int, default=1200,
+                        help='Max keypoints per frame (default: 1200)')
+    parser.add_argument('--nms_dist', type=int, default=4,
+                        help='SuperPoint NMS distance (default: 4)')
+    parser.add_argument('--min_inliers', type=int, default=30,
+                        help='Minimum inliers to accept pose (default: 30)')
+    parser.add_argument('--min_inlier_ratio', type=float, default=0.3,
+                        help='Minimum inlier ratio to accept pose (default: 0.3)')
+    parser.add_argument('--min_depth', type=float, default=1.0,
+                        help='Minimum triangulation depth (default: 1.0)')
+    parser.add_argument('--max_depth', type=float, default=80.0,
+                        help='Maximum triangulation depth (default: 80.0)')
+    parser.add_argument('--max_points_per_frame', type=int, default=1200,
+                        help='Cap triangulated points per frame (default: 1200)')
+    parser.add_argument('--voxel_size', type=float, default=0.15,
+                        help='Voxel size for final map downsample (default: 0.15)')
+    parser.add_argument('--mask_car', action='store_true',
+                        help='Enable car dashboard masking (for KITTI dataset, disabled by default for general MP4)')
     args = parser.parse_args()
-    slam = VisualSLAM3D(weights_path=args.weights, input_path=args.input)
+    slam = VisualSLAM3D(
+        weights_path=args.weights,
+        input_path=args.input,
+        nn_thresh=args.nn_thresh,
+        mask_car=args.mask_car,
+        conf_thresh=args.conf_thresh,
+        nms_dist=args.nms_dist,
+        min_inliers=args.min_inliers,
+        min_inlier_ratio=args.min_inlier_ratio,
+        min_depth=args.min_depth,
+        max_depth=args.max_depth,
+        max_points_per_frame=args.max_points_per_frame,
+        max_kpts=args.max_kpts,
+        voxel_size=args.voxel_size,
+    )
     slam.process()

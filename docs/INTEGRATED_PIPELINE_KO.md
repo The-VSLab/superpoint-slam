@@ -105,9 +105,9 @@ matching_results_integrated/          (기본값, --output으로 변경 가능)
 │   ├── frame_00002_frame_00003_matches.png
 │   └── ...
 │
-└── matches_data/                     매칭 데이터 (NPY)
-    ├── frame_00001_frame_00002_matches.npy
-    ├── frame_00002_frame_00003_matches.npy
+└── matches_data/                     매칭 데이터 (NPZ)
+   ├── frame_00001_frame_00002_matches.npz
+   ├── frame_00002_frame_00003_matches.npz
     └── ...
 ```
 
@@ -129,10 +129,9 @@ open matching_results_integrated/matches_viz/frame_00001_frame_00002_matches.png
 import numpy as np
 
 # 매칭 데이터 로드
-data = np.load('matching_results_integrated/matches_data/frame_00001_frame_00002_matches.npy',
-              allow_pickle=True).item()
+data = np.load('matching_results_integrated/matches_data/frame_00001_frame_00002_matches.npz')
 
-matches = data['matches']          # (L, 3) [idx1, idx2, distance]
+matches = data['matches']          # (L, 2) [idx1, idx2]
 inlier_mask = data['inlier_mask']  # (L,) 신뢰도 높은 매칭
 
 print(f"매칭: {len(matches)}개")
@@ -155,7 +154,7 @@ print(f"디스크립터: {desc.shape}")
 |------|--------|------|
 | `--input` | 필수 | 입력: 동영상 또는 이미지 폴더 |
 | `--output` | `matching_results_integrated` | 결과 저장 디렉토리 |
-| `--weights` | `superpoint_v1.pth` | SuperPoint 가중치 파일 |
+| `--weights` | `superpoint_v2_mobilenet.pth` | SuperPoint 가중치 파일 |
 | `--nn_thresh` | `0.7` | 매칭 거리 임계값 (0.5-1.0) |
 | `--no_cuda` | - | GPU 사용 안 함 (CPU만 사용) |
 | `--no_display` | - | 콘솔 출력 비활성화 |
@@ -289,10 +288,10 @@ A: `--no_display` 옵션으로 콘솔 출력을 비활성화하면 더 빠릅니
 
 ## 🔧 문제 해결
 
-### 문제: "superpoint_v1.pth를 찾을 수 없음"
+### 문제: "superpoint_v2_mobilenet.pth를 찾을 수 없음"
 ```bash
 # 가중치 파일 경로 지정
-python scripts/integrated_matching.py --input video.mp4 --weights ./superpoint_v1.pth
+python scripts/integrated_matching.py --input video.mp4 --weights ./superpoint_v2_mobilenet.pth
 ```
 
 ### 문제: "CUDA out of memory"
@@ -323,6 +322,3 @@ python scripts/integrated_matching.py --input video.mp4 --no_cuda
 
 ---
 
-**이것이 당신이 원하던 것입니다! 🎉**
-
-동영상 하나만 입력하면 모든 처리가 자동으로 진행됩니다!
