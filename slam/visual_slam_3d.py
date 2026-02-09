@@ -62,6 +62,13 @@ class VisualSLAM3D:
         mask_car=False,
         conf_thresh=0.003,
         nms_dist=4,
+        min_inliers=30,
+        min_inlier_ratio=0.3,
+        min_depth=1.0,
+        max_depth=80.0,
+        max_points_per_frame=1200,
+        max_kpts=1200,
+        voxel_size=0.15,
     ):
         # 1. 장치 결정
         self.device = get_optimal_device()
@@ -111,6 +118,14 @@ class VisualSLAM3D:
         self.keyframes = [] # (Pose, Frustum)
         self.traj_points = []
         self.last_t_vec = np.array([0.0, 0.0, 1.0]) 
+
+        self.min_inliers = min_inliers
+        self.min_inlier_ratio = min_inlier_ratio
+        self.min_depth = min_depth
+        self.max_depth = max_depth
+        self.max_points_per_frame = max_points_per_frame
+        self.max_kpts = max_kpts
+        self.voxel_size = voxel_size
 
         self.save_dir = "path_final"
         if not os.path.exists(self.save_dir): os.makedirs(self.save_dir)
@@ -165,7 +180,15 @@ class VisualSLAM3D:
 
             # 특징점 추출
             pts, desc, _ = self.fe.run(img_fe)
-            kpts = pts[:2, :].T if pts.shape[1] > 0 else np.empty((0, 2))
+            if pts.shape[1] > 0:
+                if pts.shape[1] > self.max_kpts:
+                    order = np.argsort(pts[2, :])[::-1]
+                    keep = order[: self.max_kpts]
+                    pts = pts[:, keep]
+                    desc = desc[:, keep]
+                kpts = pts[:2, :].T
+            else:
+                kpts = np.empty((0, 2))
 
             if self.prev_frame is None:
                 self.prev_frame, self.prev_kpts, self.prev_desc = img_gray, kpts, desc
@@ -175,9 +198,13 @@ class VisualSLAM3D:
                 frame_idx += 1
                 continue
 
-            matches = self.matcher.match(self.prev_desc, desc)
+            if self.prev_desc is not None and desc is not None:
+                matches = self.matcher.match(self.prev_desc, desc)
+            else:
+                matches = []
+                print("⚠️ 특징점이 검출되지 않아 매칭을 건너뜁니다.")
 
-            if len(matches) > 8:
+            if len(matches) >= max(self.min_inliers, 8):
                 p1 = self.prev_kpts[matches[:, 0], :2].astype(np.float64)
                 p2 = kpts[matches[:, 1], :2].astype(np.float64)
                 
@@ -186,11 +213,21 @@ class VisualSLAM3D:
                 
                 valid_step = False
                 if E is not None:
-                    _, R, t, mask = cv2.recoverPose(E, p2, p1, self.K)
+                    _, R, t, pose_mask = cv2.recoverPose(E, p2, p1, self.K)
                     t_vec = t[:, 0]
+                    inliers = int(pose_mask.sum()) if pose_mask is not None else 0
+                    inlier_ratio = inliers / max(len(matches), 1)
+                    if inliers < self.min_inliers or inlier_ratio < self.min_inlier_ratio:
+                        pose_mask = None
                     
-                    if np.isfinite(t_vec).all():
-                        # --- [안정화 로직] ---
+                    if pose_mask is None:
+                        valid_step = False
+                        p1_m, p2_m = np.empty((0, 2)), np.empty((0, 2))
+                    else:
+                        p1_m, p2_m = p1[pose_mask.ravel().astype(bool)], p2[pose_mask.ravel().astype(bool)]
+                    
+                    if np.isfinite(t_vec).all() and len(p1_m) > 0:
+                        # --- [안정화 로직: 고속도로 모드] ---
                         # 1. 후진 방지
                         if t_vec[2] < 0: t_vec = -t_vec; R = R.T
                         
@@ -214,22 +251,38 @@ class VisualSLAM3D:
                         valid_step = True
                         
                         # 맵 생성 (삼각측량)
-                        mask = mask.ravel().astype(bool)
-                        p1_m, p2_m = p1[mask], p2[mask]
-                        if len(p1_m) > 0:
-                            local_pts = self.triangulate(R, t_vec.reshape(3,1), p1_m, p2_m)
+                        local_pts = self.triangulate(R, t_vec.reshape(3,1), p1_m, p2_m)
+                        
+                        # 필터링
+                        valid = (
+                            (local_pts[:, 2] > self.min_depth)
+                            & (local_pts[:, 2] < self.max_depth)
+                            & (np.abs(local_pts[:, 0]) < 100)
+                            & (np.abs(local_pts[:, 1]) < 50)
+                            & np.isfinite(local_pts).all(axis=1)
+                        )
+                        local_pts = local_pts[valid]
+                        
+                        if len(local_pts) > 0:
+                            if len(local_pts) > self.max_points_per_frame:
+                                sample_idx = np.random.choice(
+                                    len(local_pts), self.max_points_per_frame, replace=False
+                                )
+                                local_pts = local_pts[sample_idx]
+                            world_pts = (self.cur_pose[:3, :3] @ local_pts.T).T + self.cur_pose[:3, 3]
                             
-                            valid = (local_pts[:, 2] > 1.0) & (local_pts[:, 2] < 200) & \
-                                    (np.abs(local_pts[:, 0]) < 100) & (np.abs(local_pts[:, 1]) < 50)
-                            local_pts = local_pts[valid]
+                            # [청소] 바닥 아래 지하 노이즈 제거
+                            # OpenCV 좌표계: +Y가 아래. 바닥은 약 +1.6 ~ 1.7
+                            # 1.8보다 큰 값(더 아래)은 노이즈
+                            valid_ground = world_pts[:, 1] < 1.8
+                            world_pts = world_pts[valid_ground]
                             
-                            if len(local_pts) > 0:
-                                world_pts = (self.cur_pose[:3, :3] @ local_pts.T).T + self.cur_pose[:3, 3]
-                                valid_ground = world_pts[:, 1] < 1.8
-                                world_pts = world_pts[valid_ground]
-                                cols = get_height_color(world_pts[:, 1])
-                                self.all_map_points.append(world_pts)
-                                self.all_map_colors.append(cols)
+                            # 색상 계산
+                            cols = get_height_color(world_pts[:, 1])
+                            
+                            # 저장
+                            self.all_map_points.append(world_pts)
+                            self.all_map_colors.append(cols)
 
                 if not valid_step:
                     T_rel = np.eye(4)
@@ -271,7 +324,10 @@ class VisualSLAM3D:
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(points)
         pcd.colors = o3d.utility.Vector3dVector(colors)
-        pcd = pcd.voxel_down_sample(voxel_size=0.1)
+        
+        # [중요] 점 크기 조절 안됨 -> Voxel Downsample로 밀도 조절
+        # 너무 촘촘하면 보기 싫고, 너무 듬성하면 휑함. 적당히 0.1m 간격으로 정리
+        pcd = pcd.voxel_down_sample(voxel_size=self.voxel_size)
 
         traj_pts = np.array(self.traj_points)
         lines = [[i, i+1] for i in range(len(traj_pts)-1)]
@@ -292,7 +348,7 @@ class VisualSLAM3D:
         vis = o3d.visualization.Visualizer()
         vis.create_window("SuperPoint SLAM Result", width=1280, height=720)
         vis.get_render_option().background_color = np.asarray([0.05, 0.05, 0.05])
-        vis.get_render_option().point_size = 3.0 
+        vis.get_render_option().point_size = 2.5
         
         for geom in vis_geoms:
             vis.add_geometry(geom)
@@ -308,7 +364,6 @@ class VisualSLAM3D:
         
         o3d.io.write_point_cloud(os.path.join(self.save_dir, "final_slam_map.ply"), pcd)
         print(" -> Map saved.")
-
 if __name__ == "__main__":
     print(
         "이 모듈은 라이브러리로 사용됩니다. "

@@ -78,6 +78,11 @@ dataset/
 *.avi
 *.mov
 
+# Media files
+/assets/test2.mp4
+
+debug_v14.jpg
+
 # SLAM outputs
 path_final/
 *.ply

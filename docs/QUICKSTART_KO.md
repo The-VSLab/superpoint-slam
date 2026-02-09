@@ -3,10 +3,15 @@
 ## 폴더 구조 한눈에
 
 ```
-project_root/
-├── 📄 scripts/py_superpoint.py  ← 특징점 추출 (실행 스크립트)
-├── 📄 scripts/matcher_main.py   ← 👈 여기서 매칭 실행
-├── 📁 matcher_module/           ← GPU 매칭 모듈 (새로 추가)
+superpoint-slam/
+├── 📁 scripts/
+│   ├── py_superpoint.py         ← 특징점 추출
+│   ├── matcher_main.py          ← 👈 여기서 매칭 실행
+│   ├── superpoint_app.py        ← Demo/SLAM 통합 CLI
+│   ├── integrated_matching.py   ← 통합 파이프라인
+│   └── test_matching.py         ← 시스템 테스트
+├── 📁 slam/                     ← SLAM 모듈 (visual_slam_3d.py)
+├── 📁 matcher_module/           ← GPU 매칭 모듈
 │   ├── btmatcher.py             ← BT-Matcher 구현
 │   └── utils.py                 ← 유틸리티 함수
 ├── 📁 npy_outputs/              ← 입력: SuperPoint 결과
@@ -82,6 +87,20 @@ python scripts/superpoint_app.py --mode slam --input <VIDEO_PATH> --weights <WEI
 ```
 
 ✅ 결과: `path_final/final_slam_map.ply` 생성 (3D 포인트 클라우드)
+
+---
+
+## SLAM 실행 (옵션 예시)
+
+```bash
+python scripts/superpoint_app.py \
+  --mode slam \
+  --input assets/test2.mp4 \
+  --weights weights/superpoint_v2_mobilenet.pth \
+  --resize 640 480 \
+  --slam_conf_thresh 0.003 \
+  --slam_nms_dist 4
+```
 
 ---
 
@@ -226,7 +245,3 @@ A: CPU로도 작동합니다. (다만 느림) 자동으로 GPU가 없으면 CPU 
 A: 이미지의 조명, 각도 차이 등이 영향을 미칩니다. `--nn_thresh` 값 조정 시도
 
 ---
-
-## 📞 지원
-
-더 자세한 정보는 `MATCHING_GUIDE_KO.md` 참조

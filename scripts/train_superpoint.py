@@ -179,18 +179,17 @@ def train(args: argparse.Namespace) -> None:
 
     model = SuperPointNetV2().to(device)
 
-    # [가중치 로드 부분]
     if args.weights_in:
         print(f"Loading weights from {args.weights_in}...")
         if os.path.isfile(args.weights_in):
             state = torch.load(args.weights_in, map_location="cpu")
             if isinstance(state, dict) and "state_dict" in state:
                 state = state["state_dict"]
-            
+
             msg = model.load_state_dict(state, strict=False)
             print(f"Loaded weights with msg: {msg}")
         else:
-            print(f"⚠️ Warning: Weights file not found at {args.weights_in}")
+            print(f"Warning: Weights file not found at {args.weights_in}")
 
     dataset = ImageFolderDataset(args.data_dir, (args.height, args.width))
     
@@ -217,10 +216,16 @@ def train(args: argparse.Namespace) -> None:
     model.train()
     for epoch in range(args.epochs):
         epoch_loss = 0.0
+        epoch_det_loss = 0.0
+        epoch_desc_loss = 0.0
         pbar = tqdm(loader, desc=f"Epoch {epoch + 1}/{args.epochs}")
         
         for batch in pbar:
             img = batch.to(device)
+            if args.save_debug_image and epoch == 0 and pbar.n == 0:
+                debug_img = (img[0, 0].cpu().numpy() * 255).astype(np.uint8)
+                cv2.imwrite("debug_input.jpg", debug_img)
+                print("Debug image saved to debug_input.jpg")
             b, _, h, w = img.shape
 
             h_mats = []
@@ -281,17 +286,39 @@ def train(args: argparse.Namespace) -> None:
             scaler.update()
 
             epoch_loss += loss.item()
-            pbar.set_postfix({"loss": f"{loss.item():.6f}"})
+            epoch_det_loss += det_loss.item()
+            epoch_desc_loss += desc_loss.item()
+            pbar.set_postfix(
+                {
+                    "loss": f"{loss.item():.6f}",
+                    "det": f"{det_loss.item():.6f}",
+                    "desc": f"{desc_loss.item():.6f}",
+                }
+            )
 
-        avg_loss = epoch_loss / max(1, len(loader))
-        print(f"Epoch {epoch + 1} avg loss: {avg_loss:.6f}")
+        denom = max(1, len(loader))
+        avg_loss = epoch_loss / denom
+        avg_det_loss = epoch_det_loss / denom
+        avg_desc_loss = epoch_desc_loss / denom
+        print(
+            "Epoch {}/{} avg loss: {:.6f} | det: {:.6f} | desc: {:.6f}".format(
+                epoch + 1,
+                args.epochs,
+                avg_loss,
+                avg_det_loss,
+                avg_desc_loss,
+            )
+        )
 
         if (epoch + 1) % args.save_every == 0:
             out_path = os.path.join(args.output_dir, f"superpoint_epoch_{epoch + 1}.pth")
             torch.save(model.state_dict(), out_path)
 
-    os.makedirs(args.output_dir, exist_ok=True)
-    final_path = os.path.join(args.output_dir, args.weights_out)
+    if os.path.dirname(args.weights_out):
+        final_path = args.weights_out
+    else:
+        final_path = os.path.join(args.output_dir, args.weights_out)
+    os.makedirs(os.path.dirname(final_path), exist_ok=True)
     torch.save(model.state_dict(), final_path)
     print(f"Saved weights: {final_path}")
 
@@ -301,8 +328,12 @@ def parse_args() -> argparse.Namespace:
         description="Self-supervised SuperPoint finetuning (Cross-Platform)"
     )
     parser.add_argument("--data_dir", type=str, required=True)
-    parser.add_argument("--weights_in", type=str, default=None)
-    parser.add_argument("--weights_out", type=str, default="superpoint_v2_mobilenet_ft.pth")
+    parser.add_argument("--weights_in", type=str, default="superpoint_v2_mobilenet.pth")
+    parser.add_argument(
+        "--weights_out",
+        type=str,
+        default="checkpoints/superpoint_v3_mobilenet_ft.pth",
+    )
     parser.add_argument("--output_dir", type=str, default="checkpoints")
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch_size", type=int, default=4)
@@ -328,6 +359,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--det_weight", type=float, default=1.0)
     parser.add_argument("--desc_weight", type=float, default=0.5)
     parser.add_argument("--save_every", type=int, default=1)
+    parser.add_argument("--save_debug_image", action="store_true")
 
     return parser.parse_args()
 

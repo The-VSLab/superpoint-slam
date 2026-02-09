@@ -1,7 +1,7 @@
 # SuperPoint v2 (MobileNet) 학습 가이드
 
-이 레포는 **라벨(.npz) 기반 지도학습** 스크립트를 제공합니다. 아래 가이드는 `scripts/train_synthetic.py`에 맞춰 작성되었습니다.
-KITTI 데이터를 이용한 **지도학습 스크립트**는 `scripts/train_superpoint.py`를 참고하세요.
+이 레포는 **라벨(.npz) 기반 지도학습**과 **자가학습(호모그래피+옵션 Harris)** 스크립트를 제공합니다.
+아래 가이드는 `scripts/train_synthetic.py`(라벨 기반)와 `scripts/train_superpoint.py`(자가학습)에 맞춰 작성되었습니다.
 
 ## 1) 개요
 - **방법:** 이미지와 대응되는 키포인트 라벨(.npz)을 사용해 Detector를 **CrossEntropy**로 학습합니다.
@@ -61,3 +61,62 @@ python scripts/superpoint_app.py --mode slam --input your_video.mp4 --weights ch
 ## 6) 참고
 - 이 스크립트는 **라벨(.npz) 기반 지도학습**을 위한 기본 베이스입니다.
 - 더 높은 성능이 필요하면, SuperPoint 논문의 **Homography Adaptation** 또는 **descriptor 학습**까지 확장하는 로직을 추가로 구현해야 합니다.
+
+---
+
+# 2) 자가학습 (Homography + Harris 옵션)
+
+## 개요
+- **방법:** 입력 이미지에 임의 호모그래피를 적용해 detector/descriptor를 자가학습
+- **옵션:** Harris 코너를 정답지로 사용해 detector에 감독 신호 추가 가능
+- **출력:** 기본값 `checkpoints/superpoint_v3_mobilenet_ft.pth`
+
+## 실행 방법 (CLI)
+```bash
+python scripts/train_superpoint.py \
+  --data_dir dataset/training \
+  --epochs 10 \
+  --batch_size 4 \
+  --lr 5e-5
+```
+
+## 실행 방법 (config.yml)
+```bash
+python scripts/train_superpoint.py --config config.yml
+```
+
+## Harris 옵션 (grid noise 억제용)
+- `--harris_weight`: Harris supervised loss 가중치
+- `--harris_block_size`, `--harris_ksize`, `--harris_k`, `--harris_thresh`
+
+예시:
+```bash
+python scripts/train_superpoint.py \
+  --data_dir dataset/training \
+  --harris_weight 0.3 \
+  --harris_thresh 0.01
+```
+
+---
+
+# 3) 학습 v13 (Teacher-Student 증류)
+
+## 개요
+- **Teacher:** `learning/original_superpoint.py` (VGG 기반)
+- **Student:** `scripts/py_superpoint.py`의 `SuperPointNetV2` (MobileNetV2)
+- **목적:** Teacher의 코너 분포를 Student가 따라가도록 지도
+
+## 실행 방법
+```bash
+python learning/train_superpoint_v13.py --config learning/config_v13.yml
+```
+
+## config_v13.yml 주요 항목
+- `data_dir`, `output_dir`, `height`, `width`
+- `epochs`, `batch_size`, `lr`, `num_workers`, `fp16`
+- `det_weight`, `desc_weight`, `sup_weight`, `dustbin_weight`
+- `max_rotate`, `max_scale`, `max_perspective`
+
+## 참고
+- Teacher 가중치는 코드 내부에서 `superpoint_v6_from_tf.pth`를 로드합니다.
+- 학습 결과는 `checkpoints/v14_final_epoch_*.pth`로 저장됩니다.

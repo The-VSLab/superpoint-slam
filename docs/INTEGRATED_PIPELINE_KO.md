@@ -105,9 +105,9 @@ matching_results_integrated/          (기본값, --output으로 변경 가능)
 │   ├── frame_00002_frame_00003_matches.png
 │   └── ...
 │
-└── matches_data/                     매칭 데이터 (NPY)
-    ├── frame_00001_frame_00002_matches.npy
-    ├── frame_00002_frame_00003_matches.npy
+└── matches_data/                     매칭 데이터 (NPZ)
+   ├── frame_00001_frame_00002_matches.npz
+   ├── frame_00002_frame_00003_matches.npz
     └── ...
 ```
 
@@ -129,10 +129,9 @@ open matching_results_integrated/matches_viz/frame_00001_frame_00002_matches.png
 import numpy as np
 
 # 매칭 데이터 로드
-data = np.load('matching_results_integrated/matches_data/frame_00001_frame_00002_matches.npy',
-              allow_pickle=True).item()
+data = np.load('matching_results_integrated/matches_data/frame_00001_frame_00002_matches.npz')
 
-matches = data['matches']          # (L, 3) [idx1, idx2, distance]
+matches = data['matches']          # (L, 2) [idx1, idx2]
 inlier_mask = data['inlier_mask']  # (L,) 신뢰도 높은 매칭
 
 print(f"매칭: {len(matches)}개")
@@ -323,6 +322,3 @@ python scripts/integrated_matching.py --input video.mp4 --no_cuda
 
 ---
 
-**이것이 당신이 원하던 것입니다! 🎉**
-
-동영상 하나만 입력하면 모든 처리가 자동으로 진행됩니다!
