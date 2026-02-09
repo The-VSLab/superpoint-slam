@@ -58,7 +58,6 @@ logs/
 runs/
 checkpoints/
 results/
-*.pth
 *.pt
 
 # AI Context
@@ -73,3 +72,12 @@ AGENTS.md
 
 #Machine Learning
 dataset/
+
+# videos
+*.mp4
+*.avi
+*.mov
+
+# SLAM outputs
+path_final/
+*.ply
