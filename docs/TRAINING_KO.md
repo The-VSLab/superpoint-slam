@@ -80,11 +80,6 @@ python scripts/train_superpoint.py \
   --lr 5e-5
 ```
 
-## 실행 방법 (config.yml)
-```bash
-python scripts/train_superpoint.py --config config.yml
-```
-
 ## Harris 옵션 (grid noise 억제용)
 - `--harris_weight`: Harris supervised loss 가중치
 - `--harris_block_size`, `--harris_ksize`, `--harris_k`, `--harris_thresh`

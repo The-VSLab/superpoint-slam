@@ -154,7 +154,7 @@ print(f"디스크립터: {desc.shape}")
 |------|--------|------|
 | `--input` | 필수 | 입력: 동영상 또는 이미지 폴더 |
 | `--output` | `matching_results_integrated` | 결과 저장 디렉토리 |
-| `--weights` | `superpoint_v2_mobilenet.pth` | SuperPoint 가중치 파일 |
+| `--weights` | `weights/superpoint_v2_mobilenet.pth` | SuperPoint 가중치 파일 |
 | `--nn_thresh` | `0.7` | 매칭 거리 임계값 (0.5-1.0) |
 | `--no_cuda` | - | GPU 사용 안 함 (CPU만 사용) |
 | `--no_display` | - | 콘솔 출력 비활성화 |
@@ -291,7 +291,7 @@ A: `--no_display` 옵션으로 콘솔 출력을 비활성화하면 더 빠릅니
 ### 문제: "superpoint_v2_mobilenet.pth를 찾을 수 없음"
 ```bash
 # 가중치 파일 경로 지정
-python scripts/integrated_matching.py --input video.mp4 --weights ./superpoint_v2_mobilenet.pth
+python scripts/integrated_matching.py --input video.mp4 --weights weights/superpoint_v2_mobilenet.pth
 ```
 
 ### 문제: "CUDA out of memory"
@@ -321,4 +321,3 @@ python scripts/integrated_matching.py --input video.mp4 --no_cuda
 - 구조 복원 (Structure from Motion)
 
 ---
-
