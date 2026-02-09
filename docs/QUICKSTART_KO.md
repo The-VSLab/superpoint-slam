@@ -3,10 +3,14 @@
 ## 폴더 구조 한눈에
 
 ```
-superpoint-slam-feat-63/
-├── 📄 py_superpoint.py          ← 특징점 추출 (변경 없음)
-├── 📄 matcher_main.py           ← 👈 여기서 매칭 실행
-├── 📁 matcher_module/           ← GPU 매칭 모듈 (새로 추가)
+superpoint-slam/
+├── 📄 slam_3d_live.py           ← 실시간 SLAM 실행
+├── 📁 scripts/
+│   ├── py_superpoint.py         ← 특징점 추출
+│   ├── matcher_main.py          ← 👈 여기서 매칭 실행
+│   ├── integrated_matching.py   ← 통합 파이프라인
+│   └── test_matching.py         ← 시스템 테스트
+├── 📁 matcher_module/           ← GPU 매칭 모듈
 │   ├── btmatcher.py             ← BT-Matcher 구현
 │   └── utils.py                 ← 유틸리티 함수
 ├── 📁 results_npy/              ← 입력: SuperPoint 결과
@@ -25,7 +29,7 @@ superpoint-slam-feat-63/
 ### 단계 1️⃣: 특징점 추출 (SuperPoint)
 
 ```bash
-python py_superpoint.py --input assets/icl_snippet/ --save_npy
+python scripts/py_superpoint.py --input assets/icl_snippet/ --save_npy
 ```
 
 ✅ 결과: `results_npy/` 폴더에 파일 생성
@@ -36,7 +40,7 @@ python py_superpoint.py --input assets/icl_snippet/ --save_npy
 ### 단계 2️⃣: 시스템 테스트 (선택사항)
 
 ```bash
-python test_matching.py
+python scripts/test_matching.py
 ```
 
 ✅ GPU 설정과 필요한 패키지를 확인합니다.
@@ -44,7 +48,7 @@ python test_matching.py
 ### 단계 3️⃣: 매칭 실행
 
 ```bash
-python matcher_main.py --npy_dir results_npy --output_dir matching_results
+python scripts/matcher_main.py --npy_dir results_npy --output_dir matching_results
 ```
 
 ✅ 결과: `matching_results/` 폴더 생성
@@ -53,25 +57,43 @@ python matcher_main.py --npy_dir results_npy --output_dir matching_results
 
 ---
 
+## SLAM 실행 (slam_3d_live.py)
+
+```bash
+python slam_3d_live.py --input assets/test2.mp4 --weights superpoint_v2_mobilenet.pth
+```
+
+자주 쓰는 옵션 예시:
+```bash
+python slam_3d_live.py \
+    --input assets/test2.mp4 \
+    --weights superpoint_v2_mobilenet.pth \
+    --conf_thresh 0.015 \
+    --nms_dist 16 \
+    --nn_thresh 0.7
+```
+
+---
+
 ## 💡 자주 쓰는 명령어
 
 ### 특정 프레임 쌍만 매칭하기
 ```bash
-python matcher_main.py --frame_pair frame_00001:frame_00003
+python scripts/matcher_main.py --frame_pair frame_00001:frame_00003
 ```
 
 ### 매칭 민감도 조절
 ```bash
 # 더 정확하게 (엄격함)
-python matcher_main.py --nn_thresh 0.6
+python scripts/matcher_main.py --nn_thresh 0.6
 
 # 더 관대하게 (많은 매칭)
-python matcher_main.py --nn_thresh 0.9
+python scripts/matcher_main.py --nn_thresh 0.9
 ```
 
 ### 빠른 처리 (기하학 검증 스킵)
 ```bash
-python matcher_main.py --no_geometric_test
+python scripts/matcher_main.py --no_geometric_test
 ```
 
 ---
@@ -108,11 +130,11 @@ print(f"좋은 매칭: {np.sum(inlier_mask)}")
 
 | 문제 | 해결책 |
 |------|--------|
-| `ModuleNotFoundError: matcher_module` | 현재 디렉토리가 `superpoint-slam-feat-63/`인지 확인 |
+| `ModuleNotFoundError: matcher_module` | 현재 디렉토리가 `superpoint-slam/`인지 확인 |
 | `CUDA out of memory` | `--no_geometric_test` 옵션 추가 또는 CPU 사용 |
 | 매칭 개수가 너무 적음 | `--nn_thresh 0.9` 로 더 관대하게 설정 |
 | 매칭 개수가 너무 많음 | `--nn_thresh 0.5` 로 더 엄격하게 설정 |
-| `results_npy` 폴더가 없음 | 먼저 `py_superpoint.py` 실행해서 특징점 추출 |
+| `results_npy` 폴더가 없음 | 먼저 `scripts/py_superpoint.py` 실행해서 특징점 추출 |
 
 ---
 
@@ -122,7 +144,7 @@ print(f"좋은 매칭: {np.sum(inlier_mask)}")
 |------|------|
 | 빠른 처리 | `--no_geometric_test` 추가 (2-3배 빠름) |
 | 정확도 향상 | `--nn_thresh 0.6` 로 설정 |
-| GPU 메모리 절약 | CPU 사용: `--use_cpu` |
+| GPU 메모리 절약 | GPU가 없으면 CPU로 자동 동작 |
 
 ---
 
@@ -182,10 +204,10 @@ print(f"신뢰도 높은 매칭: {np.sum(inlier_mask)}/{len(matches)}")
 ## 💬 Q&A
 
 **Q: py_superpoint.py를 수정해야 하나?**
-A: 아니요! 전혀 수정할 필요 없습니다. matcher_main.py가 별도로 작동합니다.
+A: 아니요! 전혀 수정할 필요 없습니다. scripts/matcher_main.py가 별도로 작동합니다.
 
 **Q: 자신의 이미지로 시도하려면?**
-A: `py_superpoint.py --input <이미지_폴더> --save_npy` 실행 후 matcher_main.py 실행
+A: `scripts/py_superpoint.py --input <이미지_폴더> --save_npy` 실행 후 scripts/matcher_main.py 실행
 
 **Q: GPU가 없으면?**
 A: CPU로도 작동합니다. (다만 느림) 자동으로 GPU가 없으면 CPU 사용
@@ -195,6 +217,3 @@ A: 이미지의 조명, 각도 차이 등이 영향을 미칩니다. `--nn_thres
 
 ---
 
-## 📞 지원
-
-더 자세한 정보는 `MATCHING_GUIDE_KO.md` 참조

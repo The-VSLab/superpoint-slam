@@ -59,13 +59,14 @@ class VisualSLAM3D:
         input_path,
         nn_thresh=0.7,
         mask_car=False,
-        conf_thresh=0.006,
+        conf_thresh=0.01,
         nms_dist=4,
         min_inliers=30,
         min_inlier_ratio=0.3,
         min_depth=1.0,
         max_depth=80.0,
         max_points_per_frame=1200,
+        max_kpts=1200,
         voxel_size=0.15,
     ):
         # 1. 장치 결정
@@ -146,6 +147,7 @@ class VisualSLAM3D:
         self.min_depth = min_depth
         self.max_depth = max_depth
         self.max_points_per_frame = max_points_per_frame
+        self.max_kpts = max_kpts
         self.voxel_size = voxel_size
 
         self.save_dir = "path_final"
@@ -194,7 +196,15 @@ class VisualSLAM3D:
 
             # 특징점 추출
             pts, desc, _ = self.fe.run(img_fe)
-            kpts = pts[:2, :].T if pts.shape[1] > 0 else np.empty((0, 2))
+            if pts.shape[1] > 0:
+                if pts.shape[1] > self.max_kpts:
+                    order = np.argsort(pts[2, :])[::-1]
+                    keep = order[: self.max_kpts]
+                    pts = pts[:, keep]
+                    desc = desc[:, keep]
+                kpts = pts[:2, :].T
+            else:
+                kpts = np.empty((0, 2))
 
             if self.prev_frame is None:
                 self.prev_frame, self.prev_kpts, self.prev_desc = img_gray, kpts, desc
@@ -204,7 +214,11 @@ class VisualSLAM3D:
                 frame_idx += 1
                 continue
 
-            matches = self.matcher.match(self.prev_desc, desc)
+            if self.prev_desc is not None and desc is not None:
+                matches = self.matcher.match(self.prev_desc, desc)
+            else:
+                matches = []
+                print("⚠️ 특징점이 검출되지 않아 매칭을 건너뜁니다.")
 
             if len(matches) >= max(self.min_inliers, 8):
                 p1 = self.prev_kpts[matches[:, 0], :2].astype(np.float64)
@@ -254,37 +268,37 @@ class VisualSLAM3D:
                         
                         # 맵 생성 (삼각측량)
                         local_pts = self.triangulate(R, t_vec.reshape(3,1), p1_m, p2_m)
+                        
+                        # 필터링
+                        valid = (
+                            (local_pts[:, 2] > self.min_depth)
+                            & (local_pts[:, 2] < self.max_depth)
+                            & (np.abs(local_pts[:, 0]) < 100)
+                            & (np.abs(local_pts[:, 1]) < 50)
+                            & np.isfinite(local_pts).all(axis=1)
+                        )
+                        local_pts = local_pts[valid]
+                        
+                        if len(local_pts) > 0:
+                            if len(local_pts) > self.max_points_per_frame:
+                                sample_idx = np.random.choice(
+                                    len(local_pts), self.max_points_per_frame, replace=False
+                                )
+                                local_pts = local_pts[sample_idx]
+                            world_pts = (self.cur_pose[:3, :3] @ local_pts.T).T + self.cur_pose[:3, 3]
                             
-                            # 필터링
-                            valid = (
-                                (local_pts[:, 2] > self.min_depth)
-                                & (local_pts[:, 2] < self.max_depth)
-                                & (np.abs(local_pts[:, 0]) < 100)
-                                & (np.abs(local_pts[:, 1]) < 50)
-                                & np.isfinite(local_pts).all(axis=1)
-                            )
-                            local_pts = local_pts[valid]
+                            # [청소] 바닥 아래 지하 노이즈 제거
+                            # OpenCV 좌표계: +Y가 아래. 바닥은 약 +1.6 ~ 1.7
+                            # 1.8보다 큰 값(더 아래)은 노이즈
+                            valid_ground = world_pts[:, 1] < 1.8
+                            world_pts = world_pts[valid_ground]
                             
-                            if len(local_pts) > 0:
-                                if len(local_pts) > self.max_points_per_frame:
-                                    sample_idx = np.random.choice(
-                                        len(local_pts), self.max_points_per_frame, replace=False
-                                    )
-                                    local_pts = local_pts[sample_idx]
-                                world_pts = (self.cur_pose[:3, :3] @ local_pts.T).T + self.cur_pose[:3, 3]
-                                
-                                # [청소] 바닥 아래 지하 노이즈 제거
-                                # OpenCV 좌표계: +Y가 아래. 바닥은 약 +1.6 ~ 1.7
-                                # 1.8보다 큰 값(더 아래)은 노이즈
-                                valid_ground = world_pts[:, 1] < 1.8
-                                world_pts = world_pts[valid_ground]
-                                
-                                # 색상 계산
-                                cols = get_height_color(world_pts[:, 1])
-                                
-                                # 저장
-                                self.all_map_points.append(world_pts)
-                                self.all_map_colors.append(cols)
+                            # 색상 계산
+                            cols = get_height_color(world_pts[:, 1])
+                            
+                            # 저장
+                            self.all_map_points.append(world_pts)
+                            self.all_map_colors.append(cols)
 
                 # 실패 시 관성 주행
                 if not valid_step:
@@ -388,8 +402,10 @@ if __name__ == '__main__':
                         help='Path to SuperPoint model weights (.pth file)')
     parser.add_argument('--nn_thresh', type=float, default=0.7,
                         help='Descriptor matching threshold (default: 0.7)')
-    parser.add_argument('--conf_thresh', type=float, default=0.006,
-                        help='SuperPoint confidence threshold (default: 0.006)')
+    parser.add_argument('--conf_thresh', type=float, default=0.01,
+                        help='SuperPoint confidence threshold (default: 0.01)')
+    parser.add_argument('--max_kpts', type=int, default=1200,
+                        help='Max keypoints per frame (default: 1200)')
     parser.add_argument('--nms_dist', type=int, default=4,
                         help='SuperPoint NMS distance (default: 4)')
     parser.add_argument('--min_inliers', type=int, default=30,
@@ -419,6 +435,7 @@ if __name__ == '__main__':
         min_depth=args.min_depth,
         max_depth=args.max_depth,
         max_points_per_frame=args.max_points_per_frame,
+        max_kpts=args.max_kpts,
         voxel_size=args.voxel_size,
     )
     slam.process()
