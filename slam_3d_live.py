@@ -10,6 +10,7 @@ import sys
 # 기존 모듈
 from scripts.py_superpoint import SuperPointFrontend
 from matcher_module import BTMatcher
+from scripts.loop_closure import LoopClosureManager
 
 # --- 환경별 장치 자동 설정 함수 추가 ---
 def get_optimal_device():
@@ -54,7 +55,7 @@ def get_height_color(y_vals, y_min=-5.0, y_max=2.0):
     return colors
 
 class VisualSLAM3D:
-    def __init__(self, weights_path, input_path, nn_thresh=0.7):
+    def __init__(self, weights_path, input_path, nn_thresh=0.7, jetson_scale=None, sp_scale=1.0, sp_interval=1):
         # 1. 장치 결정
         self.device = get_optimal_device()
         # SuperPointFrontend는 내부 설계상 True/False(CUDA 사용여부)를 받는 경우가 많으므로 호환성 유지
@@ -81,6 +82,14 @@ class VisualSLAM3D:
         # descriptor_dim=128로 테스트 후 안정적일 때 head_hidden 256-> 128로 전환예정
         self.fe = SuperPointFrontend(weights_path=weights_path, nms_dist=4, conf_thresh=0.003, nn_thresh=0.7, cuda=self.use_cuda, head_hidden=256, descriptor_dim=128)
         self.matcher = BTMatcher(nn_thresh=nn_thresh, use_cuda=self.use_cuda, mutual=True)
+        self.loop_closure = LoopClosureManager(
+            matcher=self.matcher,
+            K=self.K,
+            min_frame_gap=30,
+            top_k=5,
+            min_inliers=30,
+            min_inlier_ratio=0.25,
+        )
 
         self.prev_frame = None
         self.prev_kpts = None
@@ -90,9 +99,16 @@ class VisualSLAM3D:
         # 데이터 저장소
         self.all_map_points = []
         self.all_map_colors = []
-        self.keyframes = [] # (Pose, Frustum)
+        self.keyframes = [] # keyframe poses for visualization
+        self.keyframe_indices = []
         self.traj_points = []
         self.last_t_vec = np.array([0.0, 0.0, 1.0]) 
+        self.pose_graph = o3d.pipelines.registration.PoseGraph()
+        self.jetson_scale = jetson_scale
+        self.sp_scale = float(sp_scale)
+        self.sp_interval = max(int(sp_interval), 1)
+        if not (0.1 <= self.sp_scale <= 1.0):
+            raise ValueError("sp_scale must be in [0.1, 1.0]")
 
         self.save_dir = "path_final"
         if not os.path.exists(self.save_dir): os.makedirs(self.save_dir)
@@ -140,29 +156,75 @@ class VisualSLAM3D:
             img_curr = cv2.resize(frame, (self.W, self.H))
             img_gray = cv2.cvtColor(img_curr, cv2.COLOR_BGR2GRAY)
             img_masked = self.mask_car(img_gray.copy())
-            img_fe = (img_masked.astype(np.float32) / 255.0)
             frame_t0 = time.perf_counter()
 
-            # 특징점 추출
+            run_infer = (
+                self.prev_frame is None
+                or frame_idx % self.sp_interval == 0
+                or frame_idx % keyframe_interval == 0
+            )
 
-            # Superpoint 추론 시간 측정
-            # perf_counter가 time보다 짧은 구간 측정에서 더 정확
-            sp_t0 = time.perf_counter()
-            pts, desc, _ = self.fe.run(img_fe)
-            sp_t1 = time.perf_counter()
-            kpts = pts[:2, :].T if pts.shape[1] > 0 else np.empty((0, 2))
+            desc = None
+            kpts = np.empty((0, 2))
+
+            if run_infer:
+                if self.sp_scale != 1.0:
+                    sp_w = max(int(self.W * self.sp_scale), 8)
+                    sp_h = max(int(self.H * self.sp_scale), 8)
+                    img_sp = cv2.resize(img_masked, (sp_w, sp_h))
+                else:
+                    img_sp = img_masked
+
+                img_fe = (img_sp.astype(np.float32) / 255.0)
+
+                # Superpoint 추론 시간 측정
+                # perf_counter가 time보다 짧은 구간 측정에서 더 정확
+                sp_t0 = time.perf_counter()
+                pts, desc, _ = self.fe.run(img_fe)
+                sp_t1 = time.perf_counter()
+                kpts = pts[:2, :].T if pts.shape[1] > 0 else np.empty((0, 2))
+                if self.sp_scale != 1.0 and len(kpts) > 0:
+                    kpts = kpts / self.sp_scale
+            else:
+                sp_t0 = time.perf_counter()
+                sp_t1 = sp_t0
+
+            flow_p1 = None
+            flow_p2 = None
+            if self.prev_frame is not None and self.prev_kpts is not None and len(self.prev_kpts) > 0:
+                prev_pts = self.prev_kpts.astype(np.float32).reshape(-1, 1, 2)
+                curr_pts, status, _ = cv2.calcOpticalFlowPyrLK(
+                    self.prev_frame,
+                    img_gray,
+                    prev_pts,
+                    None,
+                    winSize=(21, 21),
+                    maxLevel=3,
+                    criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01),
+                )
+                if status is not None:
+                    status = status.reshape(-1).astype(bool)
+                    if status.any():
+                        flow_p1 = self.prev_kpts[status]
+                        flow_p2 = curr_pts.reshape(-1, 2)[status]
+
+            if not run_infer and flow_p2 is not None:
+                kpts = flow_p2
 
             if self.prev_frame is None:
                 self.prev_frame, self.prev_kpts, self.prev_desc = img_gray, kpts, desc
                 # 첫 프레임 키프레임 추가
                 self.traj_points.append([0,0,0])
-                self.keyframes.append(np.eye(4))
+                self.add_keyframe(frame_idx, kpts, desc)
                 frame_idx += 1
                 continue
 
             # Matcher 시간 측정
             match_t0 = time.perf_counter()
-            matches = self.matcher.match(self.prev_desc, desc)
+            matches = np.empty((0, 2), dtype=int)
+            use_flow = flow_p1 is not None and flow_p2 is not None
+            if not use_flow and self.prev_desc is not None and desc is not None:
+                matches = self.matcher.match(self.prev_desc, desc)
             match_t1 = time.perf_counter()
 
             # 프레임별 기본값 초기화(recoverPose 성공시에만 값이 갱신/ 실패하면 0 유지)
@@ -174,11 +236,20 @@ class VisualSLAM3D:
             # - desc_dim: descriptor 차원 수
             # - kpts: 현재 프레임에서 검출된 특징점 수
             # - matches: 이전 프레임과 현재 프레임 사이의 매칭된 특징점 쌍의 수
-            print(f"frame {frame_idx}: desc_dim={None if desc is None else desc.shape[0]}, kpts={len(kpts)}, matches={len(matches)}")
+            match_count = len(flow_p1) if use_flow else len(matches)
+            print(f"frame {frame_idx}: desc_dim={None if desc is None else desc.shape[0]}, kpts={len(kpts)}, matches={match_count}")
 
-            if len(matches) > 8:
+            if use_flow and len(flow_p1) > 8:
+                p1 = flow_p1.astype(np.float64)
+                p2 = flow_p2.astype(np.float64)
+            elif len(matches) > 8:
                 p1 = self.prev_kpts[matches[:, 0], :2].astype(np.float64)
                 p2 = kpts[matches[:, 1], :2].astype(np.float64)
+            else:
+                p1 = None
+                p2 = None
+
+            if p1 is not None and p2 is not None:
                 
                 # RANSAC (엄격하게)
                 E, mask = cv2.findEssentialMat(p2, p1, self.K, method=cv2.RANSAC, prob=0.999, threshold=0.5)
@@ -194,7 +265,7 @@ class VisualSLAM3D:
                     # - matches: 초기 특징점 매칭 쌍의 총 개수
                     # - inliers: RANSAC으로 선별된 기하학적으로 유효한 매칭의 수 (mask.ravel().sum())
                     # - t: 현재 프레임의 상대적 이동 벡터 [x,y,z], 소수점 3자리까지 표시하여 가독성 향상
-                    print(f"frame {frame_idx}: matches={len(matches)}, inliers={inliers}, ratio={inlier_ratio:.3f}, t={t_vec.round(3)}")
+                    print(f"frame {frame_idx}: matches={match_count}, inliers={inliers}, ratio={inlier_ratio:.3f}, t={t_vec.round(3)}")
 
                     if np.isfinite(t_vec).all():
                         # --- [안정화 로직: 고속도로 모드] ---
@@ -261,7 +332,7 @@ class VisualSLAM3D:
             
             # 키프레임 저장 (영상처럼 드문드문 파란 카메라 표시)
             if frame_idx % keyframe_interval == 0:
-                self.keyframes.append(self.cur_pose.copy())
+                self.add_keyframe(frame_idx, kpts, desc)
 
             # 2D 뷰 표시
             img_vis = cv2.cvtColor(img_curr, cv2.COLOR_BGR2GRAY)
@@ -289,13 +360,98 @@ class VisualSLAM3D:
             self.inlier_ratio_list.append(float(inlier_ratio))
             self.map_points_added_list.append(int(map_points_added))
 
-            self.prev_frame, self.prev_kpts, self.prev_desc = img_gray, kpts, desc
+            if run_infer:
+                self.prev_desc = desc
+                if len(kpts) > 0:
+                    self.prev_kpts = kpts
+                elif flow_p2 is not None and len(flow_p2) > 0:
+                    self.prev_kpts = flow_p2
+            else:
+                if flow_p2 is not None and len(flow_p2) > 0:
+                    self.prev_kpts = flow_p2
+            self.prev_frame = img_gray
             frame_idx += 1
 
         print("\n==> Video Finished. Building Final Scene...")
         cap.release()
         cv2.destroyAllWindows()
+        self.print_perf_summary()
         self.visualize_final_result()
+
+    def add_keyframe(self, frame_idx, kpts, desc):
+        self.keyframes.append(self.cur_pose.copy())
+        self.keyframe_indices.append(frame_idx)
+
+        node_idx = len(self.pose_graph.nodes)
+        self.pose_graph.nodes.append(
+            o3d.pipelines.registration.PoseGraphNode(self.cur_pose.copy())
+        )
+
+        if node_idx > 0:
+            prev_pose = self.pose_graph.nodes[node_idx - 1].pose
+            rel = np.linalg.inv(prev_pose) @ self.cur_pose
+            information = np.eye(6)
+            self.pose_graph.edges.append(
+                o3d.pipelines.registration.PoseGraphEdge(
+                    node_idx - 1,
+                    node_idx,
+                    rel,
+                    information,
+                    uncertain=False,
+                )
+            )
+
+        self.loop_closure.add_keyframe(frame_idx, kpts, desc)
+        loop = self.loop_closure.find_loop(frame_idx, kpts, desc)
+        if loop is not None:
+            information = np.eye(6)
+            self.pose_graph.edges.append(
+                o3d.pipelines.registration.PoseGraphEdge(
+                    loop.match_index,
+                    node_idx,
+                    loop.transform,
+                    information,
+                    uncertain=True,
+                )
+            )
+            self.optimize_pose_graph()
+
+    def optimize_pose_graph(self):
+        if len(self.pose_graph.nodes) < 2:
+            return
+
+        option = o3d.pipelines.registration.GlobalOptimizationOption(
+            max_correspondence_distance=1.0,
+            edge_prune_threshold=0.25,
+            reference_node=0,
+        )
+        o3d.pipelines.registration.global_optimization(
+            self.pose_graph,
+            o3d.pipelines.registration.GlobalOptimizationLevenbergMarquardt(),
+            o3d.pipelines.registration.GlobalOptimizationConvergenceCriteria(),
+            option,
+        )
+
+        for i, node in enumerate(self.pose_graph.nodes):
+            self.keyframes[i] = node.pose.copy()
+        self.cur_pose = self.pose_graph.nodes[-1].pose.copy()
+
+    def print_perf_summary(self):
+        if not self.total_ms_list:
+            return
+        avg_total = float(np.mean(self.total_ms_list))
+        avg_sp = float(np.mean(self.sp_ms_list))
+        avg_match = float(np.mean(self.match_ms_list))
+        fps = 1000.0 / max(avg_total, 1e-6)
+
+        print("==> Performance Summary")
+        print(f"   Avg total: {avg_total:.2f} ms  (FPS: {fps:.2f})")
+        print(f"   Avg SP:    {avg_sp:.2f} ms")
+        print(f"   Avg Match: {avg_match:.2f} ms")
+
+        if self.jetson_scale is not None:
+            jetson_fps = fps * self.jetson_scale
+            print(f"==> Jetson Nano est. FPS: {jetson_fps:.2f} (scale={self.jetson_scale})")
 
     def visualize_final_result(self):
         # 1. 포인트 클라우드 병합
@@ -364,6 +520,15 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--input', type=str, required=True)
     parser.add_argument('--weights', type=str, required=True)
+    parser.add_argument('--jetson-scale', type=float, default=None)
+    parser.add_argument('--sp-scale', type=float, default=1.0)
+    parser.add_argument('--sp-interval', type=int, default=1)
     args = parser.parse_args()
-    slam = VisualSLAM3D(weights_path=args.weights, input_path=args.input)
+    slam = VisualSLAM3D(
+        weights_path=args.weights,
+        input_path=args.input,
+        jetson_scale=args.jetson_scale,
+        sp_scale=args.sp_scale,
+        sp_interval=args.sp_interval,
+    )
     slam.process()
