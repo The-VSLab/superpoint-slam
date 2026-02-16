@@ -83,7 +83,13 @@ class VisualSLAM3D:
         self.W, self.H = 640, 480
         cap.release()
         
+        self.sp_scale = float(sp_scale)
+        self.sp_interval = max(int(sp_interval), 1)
+        if not (0.1 <= self.sp_scale <= 1.0):
+            raise ValueError("sp_scale must be in [0.1, 1.0]")
+
         print(f"==> Resolution: {self.W}x{self.H}")
+        print(f"==> SuperPoint config: backend={sp_backend}, fp16={sp_fp16}, sp_scale={self.sp_scale}, sp_interval={self.sp_interval}")
 
         # 카메라 파라미터 (일반적인 블랙박스 화각)
         self.focal = max(self.W, self.H) * 0.8
@@ -148,10 +154,6 @@ class VisualSLAM3D:
         self.last_t_vec = np.array([0.0, 0.0, 1.0]) 
         self.pose_graph = o3d.pipelines.registration.PoseGraph()
         self.jetson_scale = jetson_scale
-        self.sp_scale = float(sp_scale)
-        self.sp_interval = max(int(sp_interval), 1)
-        if not (0.1 <= self.sp_scale <= 1.0):
-            raise ValueError("sp_scale must be in [0.1, 1.0]")
 
         self.save_dir = "path_final"
         if not os.path.exists(self.save_dir): os.makedirs(self.save_dir)
@@ -564,10 +566,10 @@ if __name__ == '__main__':
     parser.add_argument('--input', type=str, required=True)
     parser.add_argument('--weights', type=str, required=True)
     parser.add_argument('--jetson-scale', type=float, default=None)
-    parser.add_argument('--sp-scale', type=float, default=1.0)
-    parser.add_argument('--sp-interval', type=int, default=1)
+    parser.add_argument('--sp-scale', type=float, default=0.5)
+    parser.add_argument('--sp-interval', type=int, default=2)
     parser.add_argument('--sp-backend', type=str, choices=['torch', 'trt'], default='torch')
-    parser.add_argument('--sp-fp16', action='store_true')
+    parser.add_argument('--sp-fp16', action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument('--trt-engine', type=str, default=None)
     parser.add_argument('--trt-onnx', type=str, default=None)
     parser.add_argument('--trt-build', action='store_true')
