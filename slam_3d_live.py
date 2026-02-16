@@ -55,7 +55,20 @@ def get_height_color(y_vals, y_min=-5.0, y_max=2.0):
     return colors
 
 class VisualSLAM3D:
-    def __init__(self, weights_path, input_path, nn_thresh=0.7, jetson_scale=None, sp_scale=1.0, sp_interval=1):
+    def __init__(
+        self,
+        weights_path,
+        input_path,
+        nn_thresh=0.7,
+        jetson_scale=None,
+        sp_scale=1.0,
+        sp_interval=1,
+        sp_backend="torch",
+        sp_fp16=False,
+        trt_engine=None,
+        trt_onnx=None,
+        trt_build=False,
+    ):
         # 1. 장치 결정
         self.device = get_optimal_device()
         # SuperPointFrontend는 내부 설계상 True/False(CUDA 사용여부)를 받는 경우가 많으므로 호환성 유지
@@ -80,7 +93,37 @@ class VisualSLAM3D:
 
         print("==> Loading SuperPoint...")
         # descriptor_dim=128로 테스트 후 안정적일 때 head_hidden 256-> 128로 전환예정
-        self.fe = SuperPointFrontend(weights_path=weights_path, nms_dist=4, conf_thresh=0.003, nn_thresh=0.7, cuda=self.use_cuda, head_hidden=256, descriptor_dim=128)
+        if sp_backend == "trt":
+            from scripts.superpoint_trt import SuperPointTRTFrontend, build_engine_from_onnx
+
+            if trt_engine is None:
+                raise ValueError("trt_engine is required for TensorRT backend")
+
+            if not os.path.exists(trt_engine):
+                if trt_onnx and trt_build:
+                    print("==> Building TensorRT engine from ONNX...")
+                    build_engine_from_onnx(trt_onnx, trt_engine, fp16=sp_fp16)
+                else:
+                    raise FileNotFoundError(f"TensorRT engine not found: {trt_engine}")
+
+            self.fe = SuperPointTRTFrontend(
+                engine_path=trt_engine,
+                nms_dist=4,
+                conf_thresh=0.003,
+                nn_thresh=0.7,
+                use_fp16=sp_fp16,
+            )
+        else:
+            self.fe = SuperPointFrontend(
+                weights_path=weights_path,
+                nms_dist=4,
+                conf_thresh=0.003,
+                nn_thresh=0.7,
+                cuda=self.use_cuda,
+                head_hidden=256,
+                descriptor_dim=128,
+                use_fp16=sp_fp16,
+            )
         self.matcher = BTMatcher(nn_thresh=nn_thresh, use_cuda=self.use_cuda, mutual=True)
         self.loop_closure = LoopClosureManager(
             matcher=self.matcher,
@@ -139,7 +182,7 @@ class VisualSLAM3D:
     def mask_car(self, img):
         # 대시보드(차체) 마스킹
         h, w = img.shape[:2]
-        img[int(h*0.82):, :] = 0 
+        img[int(h*0.92):, :] = 0 
         return img
 
     def process(self):
@@ -523,6 +566,11 @@ if __name__ == '__main__':
     parser.add_argument('--jetson-scale', type=float, default=None)
     parser.add_argument('--sp-scale', type=float, default=1.0)
     parser.add_argument('--sp-interval', type=int, default=1)
+    parser.add_argument('--sp-backend', type=str, choices=['torch', 'trt'], default='torch')
+    parser.add_argument('--sp-fp16', action='store_true')
+    parser.add_argument('--trt-engine', type=str, default=None)
+    parser.add_argument('--trt-onnx', type=str, default=None)
+    parser.add_argument('--trt-build', action='store_true')
     args = parser.parse_args()
     slam = VisualSLAM3D(
         weights_path=args.weights,
@@ -530,5 +578,10 @@ if __name__ == '__main__':
         jetson_scale=args.jetson_scale,
         sp_scale=args.sp_scale,
         sp_interval=args.sp_interval,
+        sp_backend=args.sp_backend,
+        sp_fp16=args.sp_fp16,
+        trt_engine=args.trt_engine,
+        trt_onnx=args.trt_onnx,
+        trt_build=args.trt_build,
     )
     slam.process()

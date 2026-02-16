@@ -70,8 +70,17 @@ class SuperPointNetV2(nn.Module):
 
 class SuperPointFrontend(object):
     """ PyTorch 네트워크를 감싸서 이미지 전처리 및 후처리를 도와주는 클래스 """
-    def __init__(self, weights_path=None, nms_dist=4, conf_thresh=0.015, nn_thresh=0.7,
-                 cuda=False, head_hidden=256, descriptor_dim=256):
+    def __init__(
+        self,
+        weights_path=None,
+        nms_dist=4,
+        conf_thresh=0.015,
+        nn_thresh=0.7,
+        cuda=False,
+        head_hidden=256,
+        descriptor_dim=256,
+        use_fp16=False,
+    ):
         self.name = 'SuperPointV2'
         self.cuda = cuda
         self.nms_dist = nms_dist
@@ -111,7 +120,10 @@ class SuperPointFrontend(object):
             self.device = torch.device("cpu")
             print("   -> Using CPU")
 
+        self.use_fp16 = bool(use_fp16 and self.device.type == "cuda")
         self.net = self.net.to(self.device)
+        if self.use_fp16:
+            self.net = self.net.half()
         self.net.eval()
 
     def nms_fast(self, in_corners, H, W, dist_thresh):
@@ -197,9 +209,15 @@ class SuperPointFrontend(object):
         inp = inp.view(1, 1, H, W)
         # 모델 파라미터와 동일 디바이스로 이동 (CUDA/MPS/CPU 모두 안전)
         inp = inp.to(self.device)
+        if self.use_fp16:
+            inp = inp.half()
         # 네트워크 순전파
         with torch.no_grad():
-            outs = self.net.forward(inp)
+            if self.use_fp16:
+                with torch.cuda.amp.autocast():
+                    outs = self.net.forward(inp)
+            else:
+                outs = self.net.forward(inp)
         semi, coarse_desc = outs[0], outs[1]
         # PyTorch -> numpy 변환
         semi = semi.data.cpu().numpy().squeeze()
@@ -225,6 +243,10 @@ class SuperPointFrontend(object):
         pts, _ = self.nms_fast(pts, H, W, dist_thresh=self.nms_dist)  # NMS 적용
         inds = np.argsort(pts[2,:])
         pts = pts[:,inds[::-1]]  # 신뢰도로 정렬
+        # 특징점 수 제한 (상위 N개만 유지)
+        max_kpts = 600
+        if pts.shape[1] > max_kpts:
+            pts = pts[:, :max_kpts]
         # 경계선을 따라 있는 점들 제거
         bord = self.border_remove
         toremoveW = np.logical_or(pts[0, :] < bord, pts[0, :] >= (W-bord))
