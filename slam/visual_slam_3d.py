@@ -274,7 +274,7 @@ class VisualSLAM3D:
 
             # 프레임별 기본값 초기화(recoverPose 성공시에만 값이 갱신/ 실패하면 0 유지)
             inliers = 0
-            inliner_ratio = 0.0
+            inlier_ratio = 0.0
             map_points_added = 0
 
             # 디버깅: 특징점 검출 및 매칭 상태 모니터링
@@ -302,13 +302,13 @@ class VisualSLAM3D:
                 valid_step = False
                 if E is not None:
                     _, R, t, mask = cv2.recoverPose(E, p2, p1, self.K)
-                    inliers = int(mask.ravel().sum()) if mask is not None else 0
-                    inlier_ratio = inliers / max(len(matches), 1)
+                    inliers = np.count_nonzero(mask) if mask is not None else 0
+                    inlier_ratio = inliers / max(match_count, 1)
                     t_vec = t[:, 0]
 
                     # 디버깅: SLAM 추적 상태 모니터링
                     # - matches: 초기 특징점 매칭 쌍의 총 개수
-                    # - inliers: RANSAC으로 선별된 기하학적으로 유효한 매칭의 수 (mask.ravel().sum())
+                    # - inliers: RANSAC으로 선별된 기하학적으로 유효한 매칭의 수 (0이 아닌 mask 요소 개수)
                     # - t: 현재 프레임의 상대적 이동 벡터 [x,y,z], 소수점 3자리까지 표시하여 가독성 향상
                     print(f"frame {frame_idx}: matches={match_count}, inliers={inliers}, ratio={inlier_ratio:.3f}, t={t_vec.round(3)}")
 

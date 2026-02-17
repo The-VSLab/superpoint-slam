@@ -15,11 +15,7 @@ def run_slam(opt):
     slam = VisualSLAM3D(
         weights_path=opt.weights,
         input_path=opt.input,
-        target_size=(opt.resize[0], opt.resize[1]),
         nn_thresh=opt.nn_thresh,
-        mask_car=opt.mask_car,
-        conf_thresh=opt.slam_conf_thresh,
-        nms_dist=opt.slam_nms_dist,
     )
     slam.process()
 
