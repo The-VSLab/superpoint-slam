@@ -222,8 +222,9 @@ class SuperPointFrontend(object):
         # PyTorch -> numpy 변환
         semi = semi.data.cpu().numpy().squeeze()
         # --- 특징점 처리
-        dense = np.exp(semi)  # Softmax
-        dense = dense / (np.sum(dense, axis=0)+.00001)  # 합이 1이 되도록 정규화
+        semi = semi - np.max(semi, axis=0, keepdims=True)
+        dense = np.exp(semi)  # Softmax (numerically stable)
+        dense = dense / (np.sum(dense, axis=0, keepdims=True) + 1e-5)  # 합이 1이 되도록 정규화
         # 더스트빈 제거
         nodust = dense[:-1, :, :]
         # 전체 해상도 히트맵을 얻기 위해 재구성

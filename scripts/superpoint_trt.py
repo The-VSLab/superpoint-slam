@@ -179,8 +179,9 @@ class SuperPointTRTFrontend:
             coarse_desc = coarse_desc.astype(np.float32)
 
         semi = semi.squeeze()
+        semi = semi - np.max(semi, axis=0, keepdims=True)
         dense = np.exp(semi)
-        dense = dense / (np.sum(dense, axis=0) + 0.00001)
+        dense = dense / (np.sum(dense, axis=0, keepdims=True) + 1e-5)
         nodust = dense[:-1, :, :]
         Hc = int(H / self.cell)
         Wc = int(W / self.cell)
