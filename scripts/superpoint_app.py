@@ -14,6 +14,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from slam.visual_slam_2d import VisualSLAM2D
+from slam.visual_slam_3d import VisualSLAM3D
 from orbslam.orb_slam_2d import ORBSLAM2D
 
 
@@ -35,19 +36,34 @@ def get_next_subdir(output_dir, prefix):
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(description="SuperPoint 2D SLAM")
-    parser.add_argument("--mode", type=str, default="slam", choices=["slam", "compare"], 
-                        help="slam: SuperPoint만 | compare: SuperPoint vs ORB")
+    parser = argparse.ArgumentParser(description="SuperPoint SLAM")
+    parser.add_argument("--mode", type=str, default="slam", choices=["slam", "compare", "3d"], 
+                        help="slam: SuperPoint 2D | compare: SuperPoint vs ORB | 3d: 3D 포인트 클라우드")
     parser.add_argument("--input", type=str, required=True, help="동영상 또는 이미지 시퀀스 경로")
     parser.add_argument("--weights", type=str, required=True, help="SuperPoint 가중치 경로")
     parser.add_argument("--resize", nargs=2, type=int, default=[640, 480], 
                         help="입력 리사이즈 [width height]")
-    parser.add_argument("--slam_conf_thresh", type=float, default=0.003, 
-                        help="특징점 신뢰도 임계값")
+    parser.add_argument("--slam_conf_thresh", type=float, default=0.001, 
+                        help="특징점 신뢰도 임계값 (낮을수록 특징점 증가)")
     parser.add_argument("--slam_nms_dist", type=int, default=4, help="NMS 거리")
     parser.add_argument("--nn_thresh", type=float, default=0.7, help="매칭 임계값")
+    parser.add_argument("--max_kpts", type=int, default=1200, help="프레임당 최대 특징점 개수")
+    parser.add_argument("--use_subpixel_refine", action=argparse.BooleanOptionalAction, default=True,
+                        help="Sub-pixel Refinement 활성화")
+    parser.add_argument("--use_uniform_distribution", action=argparse.BooleanOptionalAction, default=True,
+                        help="Grid-based NMS / 균일 분포 활성화")
+    parser.add_argument("--uniform_grid", nargs=2, type=int, default=[8, 6],
+                        help="균일 분포용 그리드 [gx gy]")
+    parser.add_argument("--sp_backend", type=str, choices=["torch", "trt"], default="torch",
+                        help="SuperPoint backend (torch or trt)")
+    parser.add_argument("--sp_fp16", action=argparse.BooleanOptionalAction, default=False,
+                        help="FP16 추론 활성화 (CUDA 전용)")
+    parser.add_argument("--trt_engine", type=str, default=None, help="TensorRT 엔진 경로")
+    parser.add_argument("--trt_onnx", type=str, default=None, help="TensorRT ONNX 경로")
+    parser.add_argument("--trt_build", action="store_true", help="ONNX에서 TensorRT 엔진 생성")
     parser.add_argument("--output_dir", type=str, default="result", help="출력 루트 디렉토리")
-    parser.add_argument("--show_display", action="store_true", help="실시간 화면 표시")
+    parser.add_argument("--show_display", action="store_true", default=True, 
+                        help="실시간 화면 표시 (기본: 활성화)")
     
     return parser
 
@@ -70,6 +86,15 @@ def run_superpoint_slam(opt):
         resize=tuple(opt.resize),
         conf_thresh=opt.slam_conf_thresh,
         nms_dist=opt.slam_nms_dist,
+        max_kpts=opt.max_kpts,
+        use_subpixel_refine=opt.use_subpixel_refine,
+        use_uniform_distribution=opt.use_uniform_distribution,
+        uniform_grid=tuple(opt.uniform_grid),
+        sp_backend=opt.sp_backend,
+        sp_fp16=opt.sp_fp16,
+        trt_engine=opt.trt_engine,
+        trt_onnx=opt.trt_onnx,
+        trt_build=opt.trt_build,
         output_dir=str(out_dir),
         show_display=opt.show_display,
     )
@@ -126,14 +151,41 @@ def run_orb_slam(opt):
     return stats
 
 
+def run_3d_slam(opt):
+    """SuperPoint 3D SLAM 실행 (포인트 클라우드 시각화)"""
+    print(f"\n{'='*80}")
+    print(f"🎬 SuperPoint 3D SLAM 시작")
+    print(f"{'='*80}")
+    print(f"📁 입력: {opt.input}")
+    print(f"{'='*80}\n")
+    
+    slam = VisualSLAM3D(
+        weights_path=opt.weights,
+        input_path=opt.input,
+        nn_thresh=opt.nn_thresh,
+        sp_scale=1.0,
+        sp_interval=1,
+        sp_backend="torch",
+        sp_fp16=False,
+    )
+    
+    slam.process()
+    
+    print(f"\n{'='*80}")
+    print(f"✅ 3D 포인트 클라우드가 생성 및 표시되었습니다!")
+    print(f"{'='*80}")
+    print(f"💾 저장위치: path_final/final_slam_map.ply")
+    print(f"{'='*80}\n")
+
+
 def main():
     opt = build_parser().parse_args()
     
     if opt.mode == "slam":
-        # SuperPoint만 실행
+        # SuperPoint 2D만 실행
         run_superpoint_slam(opt)
     elif opt.mode == "compare":
-        # 둘 다 실행 및 비교
+        # 2D 비교: SuperPoint vs ORB
         sp_stats = run_superpoint_slam(opt)
         orb_stats = run_orb_slam(opt)
         
@@ -149,6 +201,9 @@ def main():
         print(f"{'신뢰도(%)':<20} {sp_stats.avg_inlier_ratio*100:<20.1f} {orb_stats.avg_inlier_ratio*100:<20.1f}")
         print(f"{'궤적(m)':<20} {sp_stats.trajectory_length:<20.1f} {orb_stats.trajectory_length:<20.1f}")
         print(f"{'='*60}\n")
+    elif opt.mode == "3d":
+        # 3D 포인트 클라우드 (Open3D 시각화)
+        run_3d_slam(opt)
 
 
 if __name__ == "__main__":

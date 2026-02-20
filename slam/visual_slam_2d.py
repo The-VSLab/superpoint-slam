@@ -9,6 +9,7 @@ import torch
 
 from matcher_module import BTMatcher
 from scripts.py_superpoint import SuperPointFrontend
+from tracking import PointFilter
 from .slam2d_common import (
     Slam2DStats,
     compose_pose2d,
@@ -26,7 +27,7 @@ class VisualSLAM2D:
         input_path: str,
         nn_thresh: float = 0.7,
         resize: tuple[int, int] = (640, 480),
-        conf_thresh: float = 0.003,
+        conf_thresh: float = 0.001,
         nms_dist: int = 4,
         mask_car: bool = False,
         motion_scale: float = 1.0,
@@ -39,10 +40,10 @@ class VisualSLAM2D:
         trt_engine: str | None = None,
         trt_onnx: str | None = None,
         trt_build: bool = False,
-        max_kpts: int = 500,
+        max_kpts: int = 1200,
         uniform_grid: tuple[int, int] = (8, 6),
-        use_subpixel_refine: bool = False,
-        use_uniform_distribution: bool = False,
+        use_subpixel_refine: bool = True,
+        use_uniform_distribution: bool = True,
         use_hybrid_matching: bool = False,
         ratio_thresh: float = 0.85,
         ransac_thresh: float = 0.8,
@@ -127,8 +128,12 @@ class VisualSLAM2D:
                 head_hidden=256,
                 descriptor_dim=128,
                 use_fp16=self.sp_fp16,
+                top_k=self.max_kpts,
             )
         self.matcher = BTMatcher(nn_thresh=self.nn_thresh, use_cuda=self.use_cuda, mutual=True)
+        
+        # 포인트 필터 초기화 (구름/전선/노이즈 제거)
+        self.point_filter = PointFilter(frame_h=self.height, frame_w=self.width)
 
     def _apply_mask(self, gray: np.ndarray) -> np.ndarray:
         if not self.mask_car:
@@ -362,6 +367,18 @@ class VisualSLAM2D:
                         interpolation=cv2.INTER_CUBIC,
                     )
 
+                # *** 포인트 필터링 적용 ***
+                # 구름/하늘, 전선, 통계적 이상치, 낮은 신뢰도 제거
+                if len(kpts) > 0 and desc is not None:
+                    kpts_filtered, desc_filtered = self.point_filter.apply_all_filters(
+                        frame, kpts, desc
+                    )
+                    kpts = kpts_filtered
+                    desc = desc_filtered
+                else:
+                    # 필터링할 포인트 없음
+                    pass
+
                 if self.use_subpixel_refine:
                     kpts = self._refine_subpixel_com(kpts, heatmap)
                 if self.use_uniform_distribution:
@@ -443,6 +460,15 @@ class VisualSLAM2D:
             matches_count.append(int(len(matches)))
             inliers_count.append(inliers)
             inlier_ratio_list.append(inlier_ratio)
+            
+            # 진행 상황 출력 (터미널에서 확인 가능)
+            if (frame_idx + 1) % 10 == 0 or frame_idx == 0:
+                elapsed_ms = (t1 - t0) * 1000.0
+                print(f"[Frame {frame_idx+1:4d}] "
+                      f"Keypts: {len(kpts):4d} | "
+                      f"Matches: {len(matches):3d} | "
+                      f"Inliers: {inliers:3d} ({inlier_ratio*100:5.1f}%) | "
+                      f"Time: {elapsed_ms:6.1f}ms")
 
             if self.show_display:
                 vis = frame.copy()
@@ -476,7 +502,7 @@ class VisualSLAM2D:
         
         map_xy = np.vstack(all_pts) if all_pts else np.empty((0, 2), dtype=np.float64)
         
-        # 2D 맵 렌더링 (경로 + 특징점)
+        # 2D 맵 렌더링 (경로 + 특징점만 간단하게)
         topdown = render_topdown_map(traj_xy, map_xy)
 
         stats = Slam2DStats(

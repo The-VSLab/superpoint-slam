@@ -57,9 +57,25 @@ def render_topdown_map(
     map_xy: np.ndarray,
     canvas_size: tuple[int, int] = (800, 800),
     margin: int = 40,
+    occupancy_grid: np.ndarray | None = None,
 ) -> np.ndarray:
+    """탑다운 맵 렌더링 (경로 + 특징점 단순 표시)
+    
+    Args:
+        trajectory_xy: 카메라 경로 좌표 (N, 2)
+        map_xy: 맵 특징점 좌표 (M, 2)
+        canvas_size: 출력 이미지 크기 (H, W)
+        margin: 여백
+        occupancy_grid: 사용하지 않음 (호환성 유지)
+    
+    Legend:
+        - 노란색 점: 사물(구조물) 위치
+        - 녹색 선: 카메라 이동 경로
+        - 파란점: 시작점
+        - 빨간점: 끝점
+    """
     h, w = canvas_size
-    canvas = np.full((h, w, 3), 255, dtype=np.uint8)
+    canvas = np.full((h, w, 3), 255, dtype=np.uint8)  # 흰 배경
 
     if len(trajectory_xy) == 0 and len(map_xy) == 0:
         return canvas
@@ -86,17 +102,24 @@ def render_topdown_map(
         p[:, 1] = h - p[:, 1]
         return p.astype(np.int32)
 
+    # 1. 사물(특징점) 표시 - 노란색 작은 점
     if len(map_xy) > 0:
         map_px = project(map_xy)
         for pt in map_px:
-            cv2.circle(canvas, tuple(pt), 1, (180, 180, 180), -1, lineType=cv2.LINE_AA)
+            cv2.circle(canvas, tuple(pt), 2, (0, 255, 255), -1, lineType=cv2.LINE_AA)
 
+    # 2. 경로 표시 - 녹색 선
     if len(trajectory_xy) > 1:
         traj_px = project(trajectory_xy)
-        cv2.polylines(canvas, [traj_px], isClosed=False, color=(0, 180, 0), thickness=2, lineType=cv2.LINE_AA)
-        cv2.circle(canvas, tuple(traj_px[0]), 5, (255, 0, 0), -1, lineType=cv2.LINE_AA)
-        cv2.circle(canvas, tuple(traj_px[-1]), 5, (0, 0, 255), -1, lineType=cv2.LINE_AA)
+        cv2.polylines(canvas, [traj_px], isClosed=False, color=(0, 200, 0), thickness=2, lineType=cv2.LINE_AA)
+        # 시작점 - 파란색, 끝점 - 빨간색
+        cv2.circle(canvas, tuple(traj_px[0]), 5, (255, 0, 0), -1, lineType=cv2.LINE_AA)    # 시작: 파강
+        cv2.circle(canvas, tuple(traj_px[-1]), 5, (0, 0, 255), -1, lineType=cv2.LINE_AA)   # 끝: 빨강
 
+    # 3. 범례 추가
+    cv2.putText(canvas, f"Points: {len(map_xy)}", (12, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1)
+    cv2.putText(canvas, f"Path: {len(trajectory_xy)}", (12, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 0), 1)
+    
     return canvas
 
 

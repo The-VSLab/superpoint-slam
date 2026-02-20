@@ -156,6 +156,15 @@ class ORBSLAM2D:
             matches_count.append(int(len(pairs)))
             inliers_count.append(inliers)
             inlier_ratio_list.append(inlier_ratio)
+            
+            # 진행 상황 출력 (터미널에서 확인 가능)
+            if (frame_idx + 1) % 10 == 0 or frame_idx == 0:
+                elapsed_ms = (t1 - t0) * 1000.0
+                print(f"[Frame {frame_idx+1:4d}] "
+                      f"Keypts: {len(curr_kpts):4d} | "
+                      f"Matches: {len(pairs):3d} | "
+                      f"Inliers: {inliers:3d} ({inlier_ratio*100:5.1f}%) | "
+                      f"Time: {elapsed_ms:6.1f}ms")
 
             if self.show_display:
                 vis = frame.copy()
@@ -176,6 +185,8 @@ class ORBSLAM2D:
 
         traj_xy = np.asarray(trajectory, dtype=np.float64)
         map_xy = np.vstack(map_points) if len(map_points) > 0 else np.empty((0, 2), dtype=np.float64)
+        
+        # 2D 맵 렌더링 (경로 + 특징점만 간단하게)
         topdown = render_topdown_map(traj_xy, map_xy)
 
         stats = Slam2DStats(

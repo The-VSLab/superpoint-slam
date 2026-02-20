@@ -56,6 +56,8 @@ class SuperPoint(nn.Module):
         features = self.backbone(image)
         
         logits = self.detector(features)
+        desc = self.descriptor(features)
+        desc = torch.nn.functional.normalize(desc, p=2, dim=1)
         scores = torch.nn.functional.softmax(logits, 1)[:, :-1]
         b, _, h, w = scores.shape
         scores = scores.permute(0, 2, 3, 1).reshape(b, h, w, 8, 8).permute(0, 1, 3, 2, 4).reshape(b, h*8, w*8)
@@ -66,7 +68,7 @@ class SuperPoint(nn.Module):
         scores[:, :pad] = 0; scores[:, -pad:] = 0
         scores[:, :, :pad] = 0; scores[:, :, -pad:] = 0
         
-        res = {"keypoints": []}
+        res = {"keypoints": [], "desc": desc}
         for i in range(b):
             kp = torch.where(scores[i] > self.conf.detection_threshold)
             kp = torch.stack(kp, -1).flip(1).float()

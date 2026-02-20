@@ -61,7 +61,8 @@ def get_teacher_labels(teacher, img_tensor):
         patches = mask.view(b, h//8, 8, w//8, 8).permute(0, 1, 3, 2, 4).reshape(b, h//8, w//8, 64)
         labels = torch.argmax(patches, dim=3)
         labels[torch.max(patches, dim=3)[0] == 0] = 64 # 배경
-    return labels, mask
+        teacher_desc = outputs.get("desc") if isinstance(outputs, dict) else None
+    return labels, mask, teacher_desc
 
 def save_debug_trace(img, teacher_mask, prediction, path):
     """원본 사이트 스타일의 녹색 점 시각화"""
@@ -83,20 +84,53 @@ def save_debug_trace(img, teacher_mask, prediction, path):
 # --- [4] 데이터셋 정의 ---
 
 class ImageFolderDataset(Dataset):
-    def __init__(self, root, size):
+    def __init__(self, root, size, max_rotate=0.0, max_scale=0.0, max_perspective=0.0):
         exts = ["jpg", "jpeg", "png", "JPG", "PNG"]
         self.paths = []
         for e in exts:
             self.paths.extend(glob.glob(os.path.join(root, "**", f"*.{e}"), recursive=True))
         self.paths = sorted(list(set(self.paths)))
         self.h, self.w = size
+        self.max_rotate = float(max_rotate)
+        self.max_scale = float(max_scale)
+        self.max_perspective = float(max_perspective)
         print(f"✅ 데이터셋 경로: {root} | 📊 이미지 개수: {len(self.paths)}개")
 
     def __len__(self): return len(self.paths)
     def __getitem__(self, idx):
         img = cv2.imread(self.paths[idx], cv2.IMREAD_GRAYSCALE)
         if img is None: return self.__getitem__((idx + 1) % len(self.paths))
-        return torch.from_numpy(cv2.resize(img, (self.w, self.h)).astype(np.float32)/255.0).unsqueeze(0).repeat(3, 1, 1)
+        img = self._apply_homography(img)
+        img = cv2.resize(img, (self.w, self.h), interpolation=cv2.INTER_AREA)
+        return torch.from_numpy(img.astype(np.float32)/255.0).unsqueeze(0).repeat(3, 1, 1)
+
+    def _apply_homography(self, img):
+        if self.max_rotate <= 0 and self.max_scale <= 0 and self.max_perspective <= 0:
+            return img
+
+        h, w = img.shape[:2]
+        angle = random.uniform(-self.max_rotate, self.max_rotate)
+        scale = 1.0 + random.uniform(-self.max_scale, self.max_scale)
+
+        rot = cv2.getRotationMatrix2D((w / 2.0, h / 2.0), angle, scale)
+        H = np.eye(3, dtype=np.float32)
+        H[:2, :] = rot
+
+        if self.max_perspective > 0:
+            dx = w * self.max_perspective
+            dy = h * self.max_perspective
+            src = np.array([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]], dtype=np.float32)
+            dst = src + np.array([
+                [random.uniform(-dx, dx), random.uniform(-dy, dy)],
+                [random.uniform(-dx, dx), random.uniform(-dy, dy)],
+                [random.uniform(-dx, dx), random.uniform(-dy, dy)],
+                [random.uniform(-dx, dx), random.uniform(-dy, dy)],
+            ], dtype=np.float32)
+            Hp = cv2.getPerspectiveTransform(src, dst)
+            H = Hp @ H
+
+        warped = cv2.warpPerspective(img, H, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT101)
+        return warped
 
 # --- [5] 메인 학습 함수 ---
 
@@ -117,9 +151,20 @@ def train(args):
     ce_weight[64] = args.dustbin_weight # 배경 억제
 
     # 속도 최적화: num_workers 및 pin_memory 적용
-    loader = DataLoader(ImageFolderDataset(os.path.join(ROOT_DIR, args.data_dir), (args.height, args.width)), 
-                        batch_size=args.batch_size, shuffle=True, 
-                        num_workers=args.num_workers, pin_memory=True)
+    loader = DataLoader(
+        ImageFolderDataset(
+            os.path.join(ROOT_DIR, args.data_dir),
+            (args.height, args.width),
+            max_rotate=args.max_rotate,
+            max_scale=args.max_scale,
+            max_perspective=args.max_perspective,
+        ),
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.num_workers,
+        pin_memory=True,
+        persistent_workers=args.num_workers > 0,
+    )
 
     student.train()
     for epoch in range(args.epochs):
@@ -128,11 +173,16 @@ def train(args):
         
         for i, img in enumerate(pbar):
             img = img.to(device, non_blocking=True)
-            labels, teacher_mask = get_teacher_labels(teacher, img)
+            labels, teacher_mask, teacher_desc = get_teacher_labels(teacher, img)
             
             with torch.amp.autocast('cuda', enabled=args.fp16):
-                semi, _ = student(img)
-                loss = F.cross_entropy(semi, labels, weight=ce_weight)
+                semi, desc = student(img)
+                det_loss = F.cross_entropy(semi, labels, weight=ce_weight)
+                if teacher_desc is not None:
+                    desc_loss = F.mse_loss(desc, teacher_desc)
+                else:
+                    desc_loss = torch.zeros((), device=det_loss.device)
+                loss = det_loss + (float(args.desc_weight) * desc_loss)
 
             optimizer.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()
