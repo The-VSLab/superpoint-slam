@@ -130,6 +130,33 @@ def evaluate(student, teacher, loader, args, device):
         total_kpts / batches,
     )
 
+
+def save_training_state(path, student, optimizer, scaler, epoch, global_step, next_debug_step):
+    payload = {
+        "student": student.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "scaler": scaler.state_dict(),
+        "epoch": int(epoch),
+        "global_step": int(global_step),
+        "next_debug_step": None if next_debug_step is None else int(next_debug_step),
+    }
+    torch.save(payload, path)
+
+
+def load_training_state(path, student, optimizer, scaler, device):
+    ckpt = torch.load(path, map_location=device, weights_only=False)
+    student.load_state_dict(ckpt["student"], strict=True)
+    if "optimizer" in ckpt:
+        optimizer.load_state_dict(ckpt["optimizer"])
+    if "scaler" in ckpt:
+        scaler.load_state_dict(ckpt["scaler"])
+    epoch = int(ckpt.get("epoch", 0))
+    global_step = int(ckpt.get("global_step", 0))
+    next_debug_step = ckpt.get("next_debug_step", None)
+    if next_debug_step is not None:
+        next_debug_step = int(next_debug_step)
+    return epoch, global_step, next_debug_step
+
 # --- [4] 데이터셋 정의 ---
 
 class ImageFolderDataset(Dataset):
@@ -185,8 +212,13 @@ class ImageFolderDataset(Dataset):
 
 def train(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = True
+        torch.set_float32_matmul_precision("high")
+
     student = SuperPointNetV2().to(device)
-    teacher = SuperPoint().to(device)
+    use_teacher_desc = bool(getattr(args, "use_teacher_desc", True))
+    teacher = SuperPoint(return_desc=use_teacher_desc).to(device)
     
     # 가중치 로드
     w_path = os.path.join(ROOT_DIR, "superpoint_v6_from_tf.pth")
@@ -240,52 +272,120 @@ def train(args):
     save_dir = os.path.join(ROOT_DIR, args.output_dir)
     os.makedirs(save_dir, exist_ok=True)
     checkpoint_path = os.path.join(save_dir, "v14_latest.pth")
+    resume_path = getattr(args, "resume_from", None)
+    if not resume_path:
+        resume_path = os.path.join(save_dir, "v14_resume.pt")
+    elif not os.path.isabs(resume_path):
+        resume_path = os.path.join(ROOT_DIR, resume_path)
+
+    save_every_steps = max(0, int(getattr(args, "save_every_steps", 2000)))
+    debug_every = int(getattr(args, "debug_every", 100))
+    val_interval = max(1, int(getattr(args, "val_interval", 1)))
 
     student.train()
+    start_epoch = 0
     global_step = 0
-    for epoch in range(args.epochs):
-        # [떨림 방지] mininterval 설정을 통해 진행바의 잦은 갱신을 막습니다.
-        pbar = tqdm(loader, desc=f"v14-ULTRA Ep {epoch+1}", mininterval=5.0)
-        
-        for i, img in enumerate(pbar):
-            img = img.to(device, non_blocking=True)
-            labels, teacher_mask, teacher_desc = get_teacher_labels(teacher, img)
+    next_debug_step = debug_every if debug_every > 0 else None
+
+    if bool(getattr(args, "resume", False)) and os.path.exists(resume_path):
+        start_epoch, global_step, loaded_next_debug = load_training_state(
+            resume_path,
+            student,
+            optimizer,
+            scaler,
+            device,
+        )
+        if loaded_next_debug is not None:
+            next_debug_step = loaded_next_debug
+        print(f"[resume] loaded: epoch={start_epoch}, global_step={global_step}")
+
+    next_save_step = None
+    if save_every_steps > 0:
+        next_save_step = ((global_step // save_every_steps) + 1) * save_every_steps
+
+    current_epoch = start_epoch
+    try:
+        for epoch in range(start_epoch, args.epochs):
+            current_epoch = epoch
+            # [떨림 방지] mininterval 설정을 통해 진행바의 잦은 갱신을 막습니다.
+            pbar = tqdm(loader, desc=f"v14-ULTRA Ep {epoch+1}", mininterval=5.0)
             
-            with torch.amp.autocast('cuda', enabled=args.fp16):
-                semi, desc = student(img)
-                det_loss = F.cross_entropy(semi, labels, weight=ce_weight)
-                if teacher_desc is not None:
-                    desc_loss = F.mse_loss(desc, teacher_desc)
-                else:
-                    desc_loss = torch.zeros((), device=det_loss.device)
-                loss = det_loss + (float(args.desc_weight) * desc_loss)
-
-            optimizer.zero_grad(set_to_none=True)
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
-
-            global_step += img.size(0)
-            if global_step % 100 == 0:
-                heatmap = F.softmax(semi, dim=1)[:, :-1].view(-1, 8, 8, args.height//8, args.width//8).permute(0, 3, 1, 4, 2).reshape(-1, args.height, args.width)
-                # 엄격한 선별 적용 (Top-K)
-                top_k_map = select_top_k_heatmap(heatmap * (heatmap > args.detection_threshold), k=args.top_k)
-                save_debug_trace(img, teacher_mask, top_k_map, os.path.join(save_dir, "debug_v14.jpg"))
+            for i, img in enumerate(pbar):
+                img = img.to(device, non_blocking=True)
+                labels, teacher_mask, teacher_desc = get_teacher_labels(teacher, img)
                 
-                with torch.no_grad():
-                    pred_pts = (top_k_map > 0).float()
-                    precision = (pred_pts * teacher_mask).sum() / (pred_pts.sum() + 1e-6)
-                    pbar.set_postfix({"Prec": f"{precision:.2f}", "Pts": f"{int(pred_pts.sum()/args.batch_size)}"})
+                with torch.amp.autocast('cuda', enabled=args.fp16):
+                    semi, desc = student(img)
+                    det_loss = F.cross_entropy(semi, labels, weight=ce_weight)
+                    if use_teacher_desc and float(args.desc_weight) > 0 and teacher_desc is not None:
+                        desc_loss = F.mse_loss(desc, teacher_desc)
+                    else:
+                        desc_loss = torch.zeros((), device=det_loss.device)
+                    loss = det_loss + (float(args.desc_weight) * desc_loss)
 
-        torch.save(student.state_dict(), checkpoint_path)
+                optimizer.zero_grad(set_to_none=True)
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
 
-        if val_loader is not None:
-            val_loss, val_det, val_desc, val_kpts = evaluate(student, teacher, val_loader, args, device)
-            print(
-                f"[val] loss={val_loss:.4f} det={val_det:.4f} desc={val_desc:.4f} "
-                f"avg_kpts={val_kpts:.1f}"
+                global_step += img.size(0)
+                if next_debug_step is not None and global_step >= next_debug_step:
+                    heatmap = F.softmax(semi, dim=1)[:, :-1].view(-1, 8, 8, args.height//8, args.width//8).permute(0, 3, 1, 4, 2).reshape(-1, args.height, args.width)
+                    # 엄격한 선별 적용 (Top-K)
+                    top_k_map = select_top_k_heatmap(heatmap * (heatmap > args.detection_threshold), k=args.top_k)
+                    save_debug_trace(img, teacher_mask, top_k_map, os.path.join(save_dir, "debug_v14.jpg"))
+                    while next_debug_step <= global_step:
+                        next_debug_step += debug_every
+                    
+                    with torch.no_grad():
+                        pred_pts = (top_k_map > 0).float()
+                        precision = (pred_pts * teacher_mask).sum() / (pred_pts.sum() + 1e-6)
+                        pbar.set_postfix({"Prec": f"{precision:.2f}", "Pts": f"{int(pred_pts.sum()/args.batch_size)}"})
+
+                if next_save_step is not None and global_step >= next_save_step:
+                    save_training_state(
+                        resume_path,
+                        student,
+                        optimizer,
+                        scaler,
+                        epoch,
+                        global_step,
+                        next_debug_step,
+                    )
+                    while next_save_step <= global_step:
+                        next_save_step += save_every_steps
+
+            torch.save(student.state_dict(), checkpoint_path)
+            save_training_state(
+                resume_path,
+                student,
+                optimizer,
+                scaler,
+                epoch + 1,
+                global_step,
+                next_debug_step,
             )
-            student.train()
+
+            if val_loader is not None and ((epoch + 1) % val_interval == 0):
+                val_loss, val_det, val_desc, val_kpts = evaluate(student, teacher, val_loader, args, device)
+                print(
+                    f"[val] loss={val_loss:.4f} det={val_det:.4f} desc={val_desc:.4f} "
+                    f"avg_kpts={val_kpts:.1f}"
+                )
+                student.train()
+    except KeyboardInterrupt:
+        torch.save(student.state_dict(), checkpoint_path)
+        save_training_state(
+            resume_path,
+            student,
+            optimizer,
+            scaler,
+            current_epoch,
+            global_step,
+            next_debug_step,
+        )
+        print(f"\n[interrupt] checkpoint saved: {resume_path}")
+        print(f"[interrupt] latest weights saved: {checkpoint_path}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -302,6 +402,12 @@ if __name__ == "__main__":
         ('max_rotate', 15.0),
         ('max_scale', 0.1),
         ('max_perspective', 0.05),
+        ('debug_every', 100),
+        ('val_interval', 1),
+        ('save_every_steps', 2000),
+        ('resume', False),
+        ('resume_from', None),
+        ('use_teacher_desc', True),
         ('val_batch_size', None),
         ('output_dir', 'checkpoints'),
     ]:
