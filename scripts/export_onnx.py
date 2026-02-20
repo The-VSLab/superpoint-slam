@@ -71,7 +71,7 @@ def export_superpoint_onnx(weights_path, output_path, device='cpu'):
         verbose=False,
         input_names=input_names,
         output_names=output_names,
-        opset_version=12,  # TensorRT 호환성을 위해 12 이상 권장
+        opset_version=12,
         do_constant_folding=True,
         dynamic_axes=dynamic_axes
     )

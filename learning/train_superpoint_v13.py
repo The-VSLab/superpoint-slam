@@ -81,6 +81,55 @@ def save_debug_trace(img, teacher_mask, prediction, path):
     
     cv2.imwrite(path, np.hstack([orig_rgb, gt_rgb]))
 
+
+def evaluate(student, teacher, loader, args, device):
+    student.eval()
+    total_loss = 0.0
+    total_det = 0.0
+    total_desc = 0.0
+    total_kpts = 0.0
+    batches = 0
+
+    with torch.no_grad():
+        pbar = tqdm(loader, desc="val", mininterval=5.0)
+        for img in pbar:
+            img = img.to(device, non_blocking=True)
+            labels, teacher_mask, teacher_desc = get_teacher_labels(teacher, img)
+
+            with torch.amp.autocast('cuda', enabled=args.fp16):
+                semi, desc = student(img)
+                det_loss = F.cross_entropy(semi, labels, weight=args._ce_weight)
+                if teacher_desc is not None:
+                    desc_loss = F.mse_loss(desc, teacher_desc)
+                else:
+                    desc_loss = torch.zeros((), device=det_loss.device)
+                loss = det_loss + (float(args.desc_weight) * desc_loss)
+
+            heatmap = F.softmax(semi, dim=1)[:, :-1]
+            heatmap = heatmap.view(-1, 8, 8, args.height // 8, args.width // 8)
+            heatmap = heatmap.permute(0, 3, 1, 4, 2).reshape(-1, args.height, args.width)
+            top_k_map = select_top_k_heatmap(
+                heatmap * (heatmap > args.detection_threshold),
+                k=args.top_k,
+            )
+            pred_pts = (top_k_map > 0).float()
+
+            total_kpts += float(pred_pts.sum().item()) / max(1, img.size(0))
+            total_loss += float(loss.item())
+            total_det += float(det_loss.item())
+            total_desc += float(desc_loss.item())
+            batches += 1
+
+    if batches == 0:
+        return 0.0, 0.0, 0.0, 0.0
+
+    return (
+        total_loss / batches,
+        total_det / batches,
+        total_desc / batches,
+        total_kpts / batches,
+    )
+
 # --- [4] 데이터셋 정의 ---
 
 class ImageFolderDataset(Dataset):
@@ -149,6 +198,7 @@ def train(args):
 
     ce_weight = torch.ones(65, device=device)
     ce_weight[64] = args.dustbin_weight # 배경 억제
+    args._ce_weight = ce_weight
 
     # 속도 최적화: num_workers 및 pin_memory 적용
     loader = DataLoader(
@@ -166,7 +216,33 @@ def train(args):
         persistent_workers=args.num_workers > 0,
     )
 
+    val_loader = None
+    val_dir = getattr(args, "val_dir", None)
+    if val_dir:
+        val_path = os.path.join(ROOT_DIR, val_dir)
+        if os.path.isdir(val_path):
+            val_batch = int(getattr(args, "val_batch_size", args.batch_size))
+            val_loader = DataLoader(
+                ImageFolderDataset(
+                    val_path,
+                    (args.height, args.width),
+                    max_rotate=0.0,
+                    max_scale=0.0,
+                    max_perspective=0.0,
+                ),
+                batch_size=val_batch,
+                shuffle=False,
+                num_workers=args.num_workers,
+                pin_memory=True,
+                persistent_workers=args.num_workers > 0,
+            )
+
+    save_dir = os.path.join(ROOT_DIR, args.output_dir)
+    os.makedirs(save_dir, exist_ok=True)
+    checkpoint_path = os.path.join(save_dir, "v14_latest.pth")
+
     student.train()
+    global_step = 0
     for epoch in range(args.epochs):
         # [떨림 방지] mininterval 설정을 통해 진행바의 잦은 갱신을 막습니다.
         pbar = tqdm(loader, desc=f"v14-ULTRA Ep {epoch+1}", mininterval=5.0)
@@ -189,18 +265,27 @@ def train(args):
             scaler.step(optimizer)
             scaler.update()
 
-            if i % 100 == 0:
+            global_step += img.size(0)
+            if global_step % 100 == 0:
                 heatmap = F.softmax(semi, dim=1)[:, :-1].view(-1, 8, 8, args.height//8, args.width//8).permute(0, 3, 1, 4, 2).reshape(-1, args.height, args.width)
                 # 엄격한 선별 적용 (Top-K)
                 top_k_map = select_top_k_heatmap(heatmap * (heatmap > args.detection_threshold), k=args.top_k)
-                save_debug_trace(img, teacher_mask, top_k_map, os.path.join(ROOT_DIR, "debug_v14.jpg"))
+                save_debug_trace(img, teacher_mask, top_k_map, os.path.join(save_dir, "debug_v14.jpg"))
                 
                 with torch.no_grad():
                     pred_pts = (top_k_map > 0).float()
                     precision = (pred_pts * teacher_mask).sum() / (pred_pts.sum() + 1e-6)
                     pbar.set_postfix({"Prec": f"{precision:.2f}", "Pts": f"{int(pred_pts.sum()/args.batch_size)}"})
 
-        torch.save(student.state_dict(), os.path.join(ROOT_DIR, f"checkpoints/v14_final_epoch_{epoch+1}.pth"))
+        torch.save(student.state_dict(), checkpoint_path)
+
+        if val_loader is not None:
+            val_loss, val_det, val_desc, val_kpts = evaluate(student, teacher, val_loader, args, device)
+            print(
+                f"[val] loss={val_loss:.4f} det={val_det:.4f} desc={val_desc:.4f} "
+                f"avg_kpts={val_kpts:.1f}"
+            )
+            student.train()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -211,8 +296,16 @@ if __name__ == "__main__":
         for k, v in yaml.safe_load(f).items(): setattr(args, k, v)
     
     # 기본값 보장
-    for k, v in [('top_k', 600), ('detection_threshold', 0.2), ('max_rotate', 15.0), ('max_scale', 0.1), ('max_perspective', 0.05)]:
+    for k, v in [
+        ('top_k', 3000),
+        ('detection_threshold', 0.2),
+        ('max_rotate', 15.0),
+        ('max_scale', 0.1),
+        ('max_perspective', 0.05),
+        ('val_batch_size', None),
+        ('output_dir', 'checkpoints'),
+    ]:
         if not hasattr(args, k): setattr(args, k, v)
 
-    os.makedirs(os.path.join(ROOT_DIR, "checkpoints"), exist_ok=True)
+    os.makedirs(os.path.join(ROOT_DIR, args.output_dir), exist_ok=True)
     train(args)

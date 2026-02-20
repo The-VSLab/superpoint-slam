@@ -48,19 +48,16 @@ def build_parser():
     parser.add_argument("--slam_nms_dist", type=int, default=4, help="NMS 거리")
     parser.add_argument("--nn_thresh", type=float, default=0.7, help="매칭 임계값")
     parser.add_argument("--max_kpts", type=int, default=1200, help="프레임당 최대 특징점 개수")
+    parser.add_argument("--min_parallax_px", type=float, default=2.0,
+                        help="맵 포인트 추가 최소 시차(픽셀)")
     parser.add_argument("--use_subpixel_refine", action=argparse.BooleanOptionalAction, default=True,
                         help="Sub-pixel Refinement 활성화")
     parser.add_argument("--use_uniform_distribution", action=argparse.BooleanOptionalAction, default=True,
                         help="Grid-based NMS / 균일 분포 활성화")
     parser.add_argument("--uniform_grid", nargs=2, type=int, default=[8, 6],
                         help="균일 분포용 그리드 [gx gy]")
-    parser.add_argument("--sp_backend", type=str, choices=["torch", "trt"], default="torch",
-                        help="SuperPoint backend (torch or trt)")
     parser.add_argument("--sp_fp16", action=argparse.BooleanOptionalAction, default=False,
                         help="FP16 추론 활성화 (CUDA 전용)")
-    parser.add_argument("--trt_engine", type=str, default=None, help="TensorRT 엔진 경로")
-    parser.add_argument("--trt_onnx", type=str, default=None, help="TensorRT ONNX 경로")
-    parser.add_argument("--trt_build", action="store_true", help="ONNX에서 TensorRT 엔진 생성")
     parser.add_argument("--output_dir", type=str, default="result", help="출력 루트 디렉토리")
     parser.add_argument("--show_display", action="store_true", default=True, 
                         help="실시간 화면 표시 (기본: 활성화)")
@@ -87,14 +84,11 @@ def run_superpoint_slam(opt):
         conf_thresh=opt.slam_conf_thresh,
         nms_dist=opt.slam_nms_dist,
         max_kpts=opt.max_kpts,
+        min_parallax_px=opt.min_parallax_px,
         use_subpixel_refine=opt.use_subpixel_refine,
         use_uniform_distribution=opt.use_uniform_distribution,
         uniform_grid=tuple(opt.uniform_grid),
-        sp_backend=opt.sp_backend,
         sp_fp16=opt.sp_fp16,
-        trt_engine=opt.trt_engine,
-        trt_onnx=opt.trt_onnx,
-        trt_build=opt.trt_build,
         output_dir=str(out_dir),
         show_display=opt.show_display,
     )
@@ -165,7 +159,6 @@ def run_3d_slam(opt):
         nn_thresh=opt.nn_thresh,
         sp_scale=1.0,
         sp_interval=1,
-        sp_backend="torch",
         sp_fp16=False,
     )
     

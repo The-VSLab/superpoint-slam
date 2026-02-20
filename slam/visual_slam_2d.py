@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import time
 
 import cv2
@@ -36,10 +35,6 @@ class VisualSLAM2D:
         sp_scale: float = 0.5,
         sp_interval: int = 1,
         sp_fp16: bool = True,
-        sp_backend: str = "torch",
-        trt_engine: str | None = None,
-        trt_onnx: str | None = None,
-        trt_build: bool = False,
         max_kpts: int = 1200,
         uniform_grid: tuple[int, int] = (8, 6),
         use_subpixel_refine: bool = True,
@@ -47,6 +42,7 @@ class VisualSLAM2D:
         use_hybrid_matching: bool = False,
         ratio_thresh: float = 0.85,
         ransac_thresh: float = 0.8,
+        min_parallax_px: float = 2.0,
         com_radius: int = 2,
     ):
         self.weights_path = str(weights_path)
@@ -63,10 +59,6 @@ class VisualSLAM2D:
         self.sp_scale = float(sp_scale)
         self.sp_interval = max(int(sp_interval), 1)
         self.sp_fp16 = bool(sp_fp16)
-        self.sp_backend = str(sp_backend).lower()
-        self.trt_engine = trt_engine
-        self.trt_onnx = trt_onnx
-        self.trt_build = bool(trt_build)
         self.max_kpts = int(max_kpts)
         self.uniform_grid = (int(uniform_grid[0]), int(uniform_grid[1]))
         self.use_subpixel_refine = bool(use_subpixel_refine)
@@ -74,6 +66,7 @@ class VisualSLAM2D:
         self.use_hybrid_matching = bool(use_hybrid_matching)
         self.ratio_thresh = float(ratio_thresh)
         self.ransac_thresh = float(ransac_thresh)
+        self.min_parallax_px = float(min_parallax_px)
         self.com_radius = max(int(com_radius), 1)
 
         if not (0.25 <= self.sp_scale <= 1.0):
@@ -82,9 +75,6 @@ class VisualSLAM2D:
             raise ValueError("max_kpts must be >= 100")
         if self.uniform_grid[0] < 1 or self.uniform_grid[1] < 1:
             raise ValueError("uniform_grid must be positive")
-        if self.sp_backend not in ("torch", "trt"):
-            raise ValueError("sp_backend must be one of: torch, trt")
-
         self.use_cuda = torch.cuda.is_available()
 
         self.focal = max(self.width, self.height) * 0.8
@@ -95,41 +85,17 @@ class VisualSLAM2D:
             dtype=np.float64,
         )
 
-        if self.sp_backend == "trt":
-            from scripts.superpoint_trt import SuperPointTRTFrontend, build_engine_from_onnx
-
-            if not self.trt_engine:
-                raise ValueError("trt backend requires trt_engine path")
-
-            if not os.path.exists(self.trt_engine):
-                if self.trt_onnx and self.trt_build:
-                    print("==> Building TensorRT engine from ONNX...")
-                    build_engine_from_onnx(self.trt_onnx, self.trt_engine, fp16=self.sp_fp16)
-                else:
-                    raise FileNotFoundError(
-                        f"TensorRT engine not found: {self.trt_engine}. "
-                        "Provide --trt_engine or use --trt_build with --trt_onnx."
-                    )
-
-            self.frontend = SuperPointTRTFrontend(
-                engine_path=self.trt_engine,
-                nms_dist=self.nms_dist,
-                conf_thresh=self.conf_thresh,
-                nn_thresh=self.nn_thresh,
-                use_fp16=self.sp_fp16,
-            )
-        else:
-            self.frontend = SuperPointFrontend(
-                weights_path=self.weights_path,
-                nms_dist=self.nms_dist,
-                conf_thresh=self.conf_thresh,
-                nn_thresh=self.nn_thresh,
-                cuda=self.use_cuda,
-                head_hidden=256,
-                descriptor_dim=128,
-                use_fp16=self.sp_fp16,
-                top_k=self.max_kpts,
-            )
+        self.frontend = SuperPointFrontend(
+            weights_path=self.weights_path,
+            nms_dist=self.nms_dist,
+            conf_thresh=self.conf_thresh,
+            nn_thresh=self.nn_thresh,
+            cuda=self.use_cuda,
+            head_hidden=256,
+            descriptor_dim=128,
+            use_fp16=self.sp_fp16,
+            top_k=self.max_kpts,
+        )
         self.matcher = BTMatcher(nn_thresh=self.nn_thresh, use_cuda=self.use_cuda, mutual=True)
         
         # 포인트 필터 초기화 (구름/전선/노이즈 제거)
@@ -437,15 +403,20 @@ class VisualSLAM2D:
                         rot = np.array([[c, -s], [s, c]], dtype=np.float64)
                         world = (rot @ local.T).T + pose[:2]
                         
-                        # inlier 점들은 신뢰도 높음으로 표시
+                        # inlier + 최소 시차 필터링으로 허공 점 제거
                         if pose_mask is not None:
                             inlier_mask = pose_mask.flatten() > 0
-                            inlier_pts = world[inlier_mask]
-                            outlier_pts = world[~inlier_mask]
-                            map_points.append((inlier_pts, True))   # (points, is_inlier)
-                            map_points.append((outlier_pts, False))
+                            parallax = np.linalg.norm((p2 - p1), axis=1)
+                            valid = inlier_mask & (parallax >= self.min_parallax_px)
+                            inlier_pts = world[valid]
+                            if len(inlier_pts) > 0:
+                                map_points.append((inlier_pts, True))   # (points, is_inlier)
                         else:
-                            map_points.append((world, True))
+                            parallax = np.linalg.norm((p2 - p1), axis=1)
+                            valid = parallax >= self.min_parallax_px
+                            inlier_pts = world[valid]
+                            if len(inlier_pts) > 0:
+                                map_points.append((inlier_pts, True))
                 else:
                     trajectory.append(pose[:2].copy())
             else:

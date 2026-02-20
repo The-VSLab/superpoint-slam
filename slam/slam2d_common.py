@@ -52,6 +52,18 @@ def path_length(traj_xy: np.ndarray) -> float:
     return float(np.sum(np.linalg.norm(diffs, axis=1)))
 
 
+def filter_sparse_points(map_xy: np.ndarray, cell_size: float = 0.25, min_count: int = 2) -> np.ndarray:
+    if map_xy is None or len(map_xy) == 0:
+        return map_xy
+    if min_count <= 1:
+        return map_xy
+
+    cells = np.floor(map_xy / max(cell_size, 1e-6)).astype(np.int32)
+    _, inv, counts = np.unique(cells, axis=0, return_inverse=True, return_counts=True)
+    keep = counts[inv] >= min_count
+    return map_xy[keep]
+
+
 def render_topdown_map(
     trajectory_xy: np.ndarray,
     map_xy: np.ndarray,
@@ -104,7 +116,8 @@ def render_topdown_map(
 
     # 1. 사물(특징점) 표시 - 노란색 작은 점
     if len(map_xy) > 0:
-        map_px = project(map_xy)
+        filtered_map_xy = filter_sparse_points(map_xy)
+        map_px = project(filtered_map_xy)
         for pt in map_px:
             cv2.circle(canvas, tuple(pt), 2, (0, 255, 255), -1, lineType=cv2.LINE_AA)
 

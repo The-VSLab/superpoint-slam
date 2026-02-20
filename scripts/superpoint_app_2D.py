@@ -26,10 +26,6 @@ def run_slam2d(opt):
         sp_scale=opt.sp_scale,
         sp_interval=opt.sp_interval,
         sp_fp16=opt.sp_fp16,
-        sp_backend=opt.sp_backend,
-        trt_engine=opt.trt_engine,
-        trt_onnx=opt.trt_onnx,
-        trt_build=opt.trt_build,
         max_kpts=opt.max_kpts,
         uniform_grid=tuple(opt.uniform_grid),
         use_subpixel_refine=opt.use_subpixel_refine,
@@ -126,34 +122,10 @@ def build_parser():
         help="SuperPoint 추론 프레임 간격 (1이면 매 프레임)",
     )
     parser.add_argument(
-        "--sp_backend",
-        type=str,
-        default="torch",
-        choices=["torch", "trt"],
-        help="SuperPoint 백엔드 선택 (torch 또는 trt)",
-    )
-    parser.add_argument(
         "--sp_fp16",
         action=argparse.BooleanOptionalAction,
         default=False,
         help="CUDA 환경에서 FP16 추론 사용 여부 (--no-sp_fp16 로 비활성화)",
-    )
-    parser.add_argument(
-        "--trt_engine",
-        type=str,
-        default=None,
-        help="TensorRT 엔진(.engine) 경로 (sp_backend=trt에서 사용)",
-    )
-    parser.add_argument(
-        "--trt_onnx",
-        type=str,
-        default=None,
-        help="TensorRT 빌드용 ONNX 경로 (sp_backend=trt에서 선택)",
-    )
-    parser.add_argument(
-        "--trt_build",
-        action="store_true",
-        help="trt_engine이 없으면 trt_onnx로 엔진 빌드",
     )
     parser.add_argument(
         "--max_kpts",
