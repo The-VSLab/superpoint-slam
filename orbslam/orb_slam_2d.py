@@ -79,7 +79,13 @@ class ORBSLAM2D:
             t0 = time.perf_counter()
 
             frame = cv2.resize(frame, (self.width, self.height))
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            if frame.ndim == 3 and frame.shape[2] == 3:
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            elif frame.ndim == 2:
+                gray = frame
+            else:
+                print(f"ERROR: Unexpected frame shape: {frame.shape}")
+                break
 
             fe_t0 = time.perf_counter()
             cv_kpts, desc = self.extractor.detectAndCompute(gray, None)

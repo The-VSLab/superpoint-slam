@@ -412,14 +412,23 @@ class VisualSLAM2D:
                         pose = compose_pose2d(pose, delta_local, yaw)
                         trajectory.append(pose[:2].copy())
 
-                        sample = p2[::2] if len(p2) > 120 else p2
-                        centered = sample - np.array([self.cx, self.cy], dtype=np.float64)
+                        # 특징점을 맵에 추가 (2D)
+                        centered = p2 - np.array([self.cx, self.cy], dtype=np.float64)
                         local = np.stack([centered[:, 0], centered[:, 1] * 0.0], axis=1) / max(self.width, 1)
                         c = np.cos(pose[2])
                         s = np.sin(pose[2])
                         rot = np.array([[c, -s], [s, c]], dtype=np.float64)
                         world = (rot @ local.T).T + pose[:2]
-                        map_points.append(world)
+                        
+                        # inlier 점들은 신뢰도 높음으로 표시
+                        if pose_mask is not None:
+                            inlier_mask = pose_mask.flatten() > 0
+                            inlier_pts = world[inlier_mask]
+                            outlier_pts = world[~inlier_mask]
+                            map_points.append((inlier_pts, True))   # (points, is_inlier)
+                            map_points.append((outlier_pts, False))
+                        else:
+                            map_points.append((world, True))
                 else:
                     trajectory.append(pose[:2].copy())
             else:
@@ -455,7 +464,19 @@ class VisualSLAM2D:
             cv2.destroyAllWindows()
 
         traj_xy = np.asarray(trajectory, dtype=np.float64)
-        map_xy = np.vstack(map_points) if len(map_points) > 0 else np.empty((0, 2), dtype=np.float64)
+        
+        # 맵 포인트 결합 (모든 특징점을 표시)
+        all_pts = []
+        for item in map_points:
+            if isinstance(item, tuple):
+                pts, _ = item  # is_inlier 무시
+                all_pts.append(pts)
+            else:
+                all_pts.append(item)
+        
+        map_xy = np.vstack(all_pts) if all_pts else np.empty((0, 2), dtype=np.float64)
+        
+        # 2D 맵 렌더링 (경로 + 특징점)
         topdown = render_topdown_map(traj_xy, map_xy)
 
         stats = Slam2DStats(
