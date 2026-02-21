@@ -395,22 +395,39 @@ class VisualSLAM2D:
                         pose = compose_pose2d(pose, delta_local, yaw)
                         trajectory.append(pose[:2].copy())
 
-                        # 특징점을 맵에 추가 (2D)
-                        centered = p2 - np.array([self.cx, self.cy], dtype=np.float64)
-                        local = np.stack([centered[:, 0], centered[:, 1] * 0.0], axis=1) / max(self.width, 1)
+                        # === 특징점을 맵에 추가 (깊이 추정 기반) ===
+                        # Y 좌표 기반 깊이 추정: 하단(가까움) ~ 상단(멀리)
+                        # 예: 화면 하단 20% → 2m, 중앙 → 10m, 상단 30% → 30m
+                        y_normalized = (self.cy - p2[:, 1]) / (self.cy + 1e-6)  # -1 (하단) ~ +1 (상단)
+                        y_normalized = np.clip(y_normalized, -1.0, 1.0)
+                        
+                        # 깊이 매핑: 하단(2m) ~ 상단(30m)  
+                        depth_min = 2.0
+                        depth_max = 30.0
+                        depth = depth_min + (depth_max - depth_min) * (y_normalized + 1.0) / 2.0
+                        
+                        # X 방향 오프셋 (수평 위치 기반)
+                        x_offset = (p2[:, 0] - self.cx) / (self.focal + 1e-6)
+                        
+                        # 로컬 좌표계 (X: 좌우, Y: 전방 깊이)
+                        local_x = x_offset * depth
+                        local_y = depth
+                        local = np.stack([local_x, local_y], axis=1)
+                        
+                        # 월드 좌표 변환 (회전 + 이동)
                         c = np.cos(pose[2])
                         s = np.sin(pose[2])
                         rot = np.array([[c, -s], [s, c]], dtype=np.float64)
                         world = (rot @ local.T).T + pose[:2]
                         
-                        # inlier + 최소 시차 필터링으로 허공 점 제거
+                        # inlier + 최소 시차 필터링
                         if pose_mask is not None:
                             inlier_mask = pose_mask.flatten() > 0
                             parallax = np.linalg.norm((p2 - p1), axis=1)
                             valid = inlier_mask & (parallax >= self.min_parallax_px)
                             inlier_pts = world[valid]
                             if len(inlier_pts) > 0:
-                                map_points.append((inlier_pts, True))   # (points, is_inlier)
+                                map_points.append((inlier_pts, True))
                         else:
                             parallax = np.linalg.norm((p2 - p1), axis=1)
                             valid = parallax >= self.min_parallax_px

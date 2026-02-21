@@ -114,24 +114,25 @@ def render_topdown_map(
         p[:, 1] = h - p[:, 1]
         return p.astype(np.int32)
 
-    # 1. 사물(특징점) 표시 - 노란색 작은 점
+    # 1. 사물(특징점) 표시 - 빨간색 점 (크기 키움)
     if len(map_xy) > 0:
-        filtered_map_xy = filter_sparse_points(map_xy)
+        # 필터링 완화: 더 많은 특징점 표시
+        filtered_map_xy = filter_sparse_points(map_xy, cell_size=0.5, min_count=1)
         map_px = project(filtered_map_xy)
         for pt in map_px:
-            cv2.circle(canvas, tuple(pt), 2, (0, 255, 255), -1, lineType=cv2.LINE_AA)
+            cv2.circle(canvas, tuple(pt), 3, (0, 0, 255), -1, lineType=cv2.LINE_AA)  # 빨간색, 크기 3
 
-    # 2. 경로 표시 - 녹색 선
+    # 2. 경로 표시 - 진한 녹색 선 (두께 증가)
     if len(trajectory_xy) > 1:
         traj_px = project(trajectory_xy)
-        cv2.polylines(canvas, [traj_px], isClosed=False, color=(0, 200, 0), thickness=2, lineType=cv2.LINE_AA)
-        # 시작점 - 파란색, 끝점 - 빨간색
-        cv2.circle(canvas, tuple(traj_px[0]), 5, (255, 0, 0), -1, lineType=cv2.LINE_AA)    # 시작: 파강
-        cv2.circle(canvas, tuple(traj_px[-1]), 5, (0, 0, 255), -1, lineType=cv2.LINE_AA)   # 끝: 빨강
+        cv2.polylines(canvas, [traj_px], isClosed=False, color=(0, 150, 0), thickness=3, lineType=cv2.LINE_AA)
+        # 시작점 - 주황색, 끝점 - 자주색
+        cv2.circle(canvas, tuple(traj_px[0]), 7, (0, 165, 255), -1, lineType=cv2.LINE_AA)    # 시작: 주황
+        cv2.circle(canvas, tuple(traj_px[-1]), 7, (255, 0, 255), -1, lineType=cv2.LINE_AA)   # 끝: 자주
 
-    # 3. 범례 추가
-    cv2.putText(canvas, f"Points: {len(map_xy)}", (12, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1)
-    cv2.putText(canvas, f"Path: {len(trajectory_xy)}", (12, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 0), 1)
+    # 3. 범례 추가 (더 명확하게)
+    cv2.putText(canvas, f"Features: {len(filtered_map_xy if len(map_xy) > 0 else [])}", (12, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+    cv2.putText(canvas, f"Path: {len(trajectory_xy)}", (12, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 150, 0), 2)
     
     return canvas
 
