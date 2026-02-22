@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 import time
 
 import cv2
@@ -57,6 +58,8 @@ class VisualSLAM2D:
         top_region_min_grad: float = 34.0,
         top_region_min_std: float = 14.0,
         bottom_region_ratio: float = 0.35,
+        deterministic: bool = False,
+        seed: int = 0,
     ):
         self.weights_path = str(weights_path)
         self.input_path = str(input_path)
@@ -96,6 +99,11 @@ class VisualSLAM2D:
         self.top_region_min_grad = float(top_region_min_grad)
         self.top_region_min_std = float(top_region_min_std)
         self.bottom_region_ratio = float(bottom_region_ratio)
+        self.deterministic = bool(deterministic)
+        self.seed = int(seed)
+
+        if self.deterministic:
+            self._configure_determinism()
 
         if not (0.25 <= self.sp_scale <= 1.0):
             raise ValueError("sp_scale must be in [0.25, 1.0]")
@@ -128,6 +136,22 @@ class VisualSLAM2D:
         
         # 포인트 필터 초기화 (구름/전선/노이즈 제거)
         self.point_filter = PointFilter(frame_h=self.height, frame_w=self.width)
+
+    def _configure_determinism(self) -> None:
+        random.seed(self.seed)
+        np.random.seed(self.seed)
+        torch.manual_seed(self.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(self.seed)
+
+        cv2.setRNGSeed(self.seed)
+
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
+        try:
+            torch.use_deterministic_algorithms(True)
+        except Exception:
+            pass
 
     def _apply_mask(self, gray: np.ndarray) -> np.ndarray:
         if not self.mask_car:

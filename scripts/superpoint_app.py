@@ -85,6 +85,10 @@ def build_parser():
                         help="균일 분포용 그리드 [gx gy]")
     parser.add_argument("--sp_fp16", action=argparse.BooleanOptionalAction, default=False,
                         help="FP16 추론 활성화 (CUDA 전용)")
+    parser.add_argument("--deterministic", action=argparse.BooleanOptionalAction, default=False,
+                        help="재현성 모드(고정 seed + deterministic 연산) 활성화")
+    parser.add_argument("--seed", type=int, default=7,
+                        help="재현성 모드에서 사용할 시드")
     parser.add_argument("--output_dir", type=str, default="result", help="출력 루트 디렉토리")
     parser.add_argument("--show_display", action=argparse.BooleanOptionalAction, default=True,
                         help="실시간 화면 표시 (기본: 활성화, --no-show_display로 비활성화)")
@@ -141,6 +145,8 @@ def run_superpoint_slam(opt):
             top_region_min_std=opt.top_region_min_std,
             bottom_region_ratio=opt.bottom_region_ratio,
         sp_fp16=opt.sp_fp16,
+        deterministic=opt.deterministic,
+        seed=opt.seed,
         output_dir=str(out_dir),
         show_display=opt.show_display,
     )

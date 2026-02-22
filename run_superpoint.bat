@@ -16,6 +16,7 @@ set "WEIGHTS=.\weights\superpoint_cocoms.pth"
 set "MODE=compare"
 set "MIN_KPTS=600"
 set "MAX_KPTS=600"
+set "SEED=7"
 set "KPT_RADIUS=1"
 set "BOTTOM_RATIO=0.35"
 
@@ -27,6 +28,8 @@ set "CMD=!CMD! --weights %WEIGHTS%"
 set "CMD=!CMD! --aggressive_shadow_filter"
 set "CMD=!CMD! --min_kpts %MIN_KPTS%"
 set "CMD=!CMD! --max_kpts %MAX_KPTS%"
+set "CMD=!CMD! --deterministic"
+set "CMD=!CMD! --seed %SEED%"
 set "CMD=!CMD! --kpt_display_radius %KPT_RADIUS%"
 set "CMD=!CMD! --bottom_region_ratio %BOTTOM_RATIO%"
 
@@ -36,6 +39,7 @@ echo   INPUT: %INPUT%
 echo   WEIGHTS: %WEIGHTS%
 echo   MIN_KEYPOINTS: %MIN_KPTS%
 echo   MAX_KEYPOINTS: %MAX_KPTS%
+echo   DETERMINISTIC: ON (SEED=%SEED%)
 echo   RADIUS: %KPT_RADIUS%px
 echo   BOTTOM_RATIO: %BOTTOM_RATIO%
 echo.
