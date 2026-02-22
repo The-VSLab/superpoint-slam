@@ -86,3 +86,8 @@ debug_v14.jpg
 # SLAM outputs
 path_final/
 *.ply
+
+#results
+result
+
+assets/rgbd_dataset_freiburg1_rpy/

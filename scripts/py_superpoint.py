@@ -80,6 +80,8 @@ class SuperPointFrontend(object):
         head_hidden=256,
         descriptor_dim=256,
         use_fp16=False,
+        top_k=600,
+        use_torch_nms=True,
     ):
         self.name = 'SuperPointV2'
         self.cuda = cuda
@@ -88,6 +90,8 @@ class SuperPointFrontend(object):
         self.nn_thresh = nn_thresh  # 좋은 매칭을 위한 L2 디스크립터 거리 임계값
         self.cell = 8  # 각 출력 셀의 크기. 고정값입니다.
         self.border_remove = 4  # 경계에서 이 거리만큼 가까운 점들을 제거
+        self.top_k = int(top_k) if top_k is not None else 0
+        self.use_torch_nms = bool(use_torch_nms)
 
         # 추론 모드로 네트워크 로드
         self.net = SuperPointNetV2(head_hidden=head_hidden, descriptor_dim=descriptor_dim)
@@ -191,6 +195,15 @@ class SuperPointFrontend(object):
         out_inds = inds1[inds_keep[inds2]]
         return out, out_inds
 
+    def _nms_torch(self, scores: torch.Tensor, dist_thresh: int) -> torch.Tensor:
+        # scores: [H, W] torch tensor
+        if dist_thresh <= 0:
+            return scores
+        k = dist_thresh * 2 + 1
+        pooled = torch.nn.functional.max_pool2d(scores[None, None], kernel_size=k, stride=1, padding=dist_thresh)
+        keep = scores == pooled[0, 0]
+        return torch.where(keep, scores, torch.zeros_like(scores))
+
     def run(self, img):
         """ numpy 이미지를 처리하여 특징점과 디스크립터를 추출합니다.
         입력
@@ -219,40 +232,82 @@ class SuperPointFrontend(object):
             else:
                 outs = self.net.forward(inp)
         semi, coarse_desc = outs[0], outs[1]
-        # PyTorch -> numpy 변환
-        semi = semi.data.cpu().numpy().squeeze()
-        # --- 특징점 처리
-        dense = np.exp(semi)  # Softmax
-        dense = dense / (np.sum(dense, axis=0)+.00001)  # 합이 1이 되도록 정규화
-        # 더스트빈 제거
-        nodust = dense[:-1, :, :]
-        # 전체 해상도 히트맵을 얻기 위해 재구성
-        Hc = int(H / self.cell)
-        Wc = int(W / self.cell)
-        nodust = nodust.transpose(1, 2, 0)
-        heatmap = np.reshape(nodust, [Hc, Wc, self.cell, self.cell])
-        heatmap = np.transpose(heatmap, [0, 2, 1, 3])
-        heatmap = np.reshape(heatmap, [Hc*self.cell, Wc*self.cell])
-        xs, ys = np.where(heatmap >= self.conf_thresh)  # 신뢰도 임계값
-        if len(xs) == 0:
-            return np.zeros((3, 0)), None, None
-        pts = np.zeros((3, len(xs)))  # 3xN 크기의 점 데이터 채우기
-        pts[0, :] = ys
-        pts[1, :] = xs
-        pts[2, :] = heatmap[xs, ys]
-        pts, _ = self.nms_fast(pts, H, W, dist_thresh=self.nms_dist)  # NMS 적용
-        inds = np.argsort(pts[2,:])
-        pts = pts[:,inds[::-1]]  # 신뢰도로 정렬
-        # 특징점 수 제한 (상위 N개만 유지)
-        max_kpts = 600
-        if pts.shape[1] > max_kpts:
-            pts = pts[:, :max_kpts]
-        # 경계선을 따라 있는 점들 제거
-        bord = self.border_remove
-        toremoveW = np.logical_or(pts[0, :] < bord, pts[0, :] >= (W-bord))
-        toremoveH = np.logical_or(pts[1, :] < bord, pts[1, :] >= (H-bord))
-        toremove = np.logical_or(toremoveW, toremoveH)
-        pts = pts[:, ~toremove]
+
+        # --- 특징점 처리 (torch 기반 NMS)
+        if self.use_torch_nms:
+            semi_t = semi.float()
+            semi_t = semi_t - torch.max(semi_t, dim=1, keepdim=True)[0]
+            dense = torch.exp(semi_t)
+            dense = dense / (torch.sum(dense, dim=1, keepdim=True) + 1e-5)
+            nodust = dense[:, :-1, :, :]
+
+            Hc = int(H / self.cell)
+            Wc = int(W / self.cell)
+            heatmap_t = nodust.permute(0, 2, 3, 1).reshape(1, Hc, Wc, self.cell, self.cell)
+            heatmap_t = heatmap_t.permute(0, 1, 3, 2, 4).reshape(1, Hc * self.cell, Wc * self.cell)
+            heatmap = heatmap_t[0]
+
+            scores = self._nms_torch(heatmap, self.nms_dist)
+            scores = torch.where(scores >= self.conf_thresh, scores, torch.zeros_like(scores))
+
+            # 경계 제거
+            bord = self.border_remove
+            scores[:bord, :] = 0
+            scores[-bord:, :] = 0
+            scores[:, :bord] = 0
+            scores[:, -bord:] = 0
+
+            flat = scores.view(-1)
+            pos_idx = torch.nonzero(flat > 0, as_tuple=False).squeeze(1)
+            if pos_idx.numel() == 0:
+                return np.zeros((3, 0)), None, None
+
+            if self.top_k > 0 and pos_idx.numel() > self.top_k:
+                vals = flat[pos_idx]
+                _, top_idx = torch.topk(vals, self.top_k)
+                keep_idx = pos_idx[top_idx]
+            else:
+                keep_idx = pos_idx
+
+            ys = (keep_idx // W).int()
+            xs = (keep_idx % W).int()
+            pts = torch.stack([xs, ys, flat[keep_idx]], dim=0).cpu().numpy()
+            heatmap = heatmap.cpu().numpy()
+        else:
+            # PyTorch -> numpy 변환
+            semi = semi.data.cpu().numpy().squeeze()
+            # --- 특징점 처리
+            semi = semi - np.max(semi, axis=0, keepdims=True)
+            dense = np.exp(semi)  # Softmax (numerically stable)
+            dense = dense / (np.sum(dense, axis=0, keepdims=True) + 1e-5)  # 합이 1이 되도록 정규화
+            # 더스트빈 제거
+            nodust = dense[:-1, :, :]
+            # 전체 해상도 히트맵을 얻기 위해 재구성
+            Hc = int(H / self.cell)
+            Wc = int(W / self.cell)
+            nodust = nodust.transpose(1, 2, 0)
+            heatmap = np.reshape(nodust, [Hc, Wc, self.cell, self.cell])
+            heatmap = np.transpose(heatmap, [0, 2, 1, 3])
+            heatmap = np.reshape(heatmap, [Hc*self.cell, Wc*self.cell])
+            xs, ys = np.where(heatmap >= self.conf_thresh)  # 신뢰도 임계값
+            if len(xs) == 0:
+                return np.zeros((3, 0)), None, None
+            pts = np.zeros((3, len(xs)))  # 3xN 크기의 점 데이터 채우기
+            pts[0, :] = ys
+            pts[1, :] = xs
+            pts[2, :] = heatmap[xs, ys]
+            pts, _ = self.nms_fast(pts, H, W, dist_thresh=self.nms_dist)  # NMS 적용
+            inds = np.argsort(pts[2,:])
+            pts = pts[:,inds[::-1]]  # 신뢰도로 정렬
+            # 특징점 수 제한 (상위 N개만 유지)
+            if self.top_k > 0 and pts.shape[1] > self.top_k:
+                pts = pts[:, :self.top_k]
+            # 경계선을 따라 있는 점들 제거
+            bord = self.border_remove
+            toremoveW = np.logical_or(pts[0, :] < bord, pts[0, :] >= (W-bord))
+            toremoveH = np.logical_or(pts[1, :] < bord, pts[1, :] >= (H-bord))
+            toremove = np.logical_or(toremoveW, toremoveH)
+            pts = pts[:, ~toremove]
         # --- 디스크립터 처리
         D = coarse_desc.shape[1]
         if pts.shape[1] == 0:

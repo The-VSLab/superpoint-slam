@@ -40,6 +40,7 @@ class SuperPoint(nn.Module):
         super().__init__()
         self.conf = SimpleNamespace(**{**self.default_conf, **conf})
         self.stride = 8
+        self.return_desc = bool(getattr(self.conf, "return_desc", True))
         
         # 가중치 파일 v6 구조와 100% 일치하는 backbone
         self.backbone = nn.Sequential(
@@ -56,6 +57,10 @@ class SuperPoint(nn.Module):
         features = self.backbone(image)
         
         logits = self.detector(features)
+        desc = None
+        if self.return_desc:
+            desc = self.descriptor(features)
+            desc = torch.nn.functional.normalize(desc, p=2, dim=1)
         scores = torch.nn.functional.softmax(logits, 1)[:, :-1]
         b, _, h, w = scores.shape
         scores = scores.permute(0, 2, 3, 1).reshape(b, h, w, 8, 8).permute(0, 1, 3, 2, 4).reshape(b, h*8, w*8)
@@ -67,6 +72,8 @@ class SuperPoint(nn.Module):
         scores[:, :, :pad] = 0; scores[:, :, -pad:] = 0
         
         res = {"keypoints": []}
+        if desc is not None:
+            res["desc"] = desc
         for i in range(b):
             kp = torch.where(scores[i] > self.conf.detection_threshold)
             kp = torch.stack(kp, -1).flip(1).float()
