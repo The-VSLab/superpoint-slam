@@ -47,9 +47,36 @@ def build_parser():
                         help="특징점 신뢰도 임계값 (낮을수록 특징점 증가)")
     parser.add_argument("--slam_nms_dist", type=int, default=4, help="NMS 거리")
     parser.add_argument("--nn_thresh", type=float, default=0.7, help="매칭 임계값")
-    parser.add_argument("--max_kpts", type=int, default=1200, help="프레임당 최대 특징점 개수")
+    parser.add_argument("--max_kpts", type=int, default=1500, help="프레임당 최대 특징점 개수(기본: 1500)")
+    parser.add_argument("--min_kpts", type=int, default=600, help="프레임당 최소 특징점 개수(기본: 600)")
     parser.add_argument("--min_parallax_px", type=float, default=2.0,
                         help="맵 포인트 추가 최소 시차(픽셀)")
+    parser.add_argument("--kpt_display_radius", type=int, default=1,
+                        help="화면 출력 특징점 반지름 (픽셀, 낮을수록 작음)")
+    parser.add_argument("--aggressive_shadow_filter", action="store_true",
+                        help="강한 그림자 억제 프리셋(자동으로 파라미터 조정)")
+    parser.add_argument("--use_shadow_filter", action=argparse.BooleanOptionalAction, default=True,
+                        help="그림자 기반 특징점 필터 활성화")
+    parser.add_argument("--use_top_region_filter", action=argparse.BooleanOptionalAction, default=True,
+                        help="영상 상단 영역(하늘) 특징점 억제 필터 활성화")
+    parser.add_argument("--shadow_value_thresh", type=float, default=0.46,
+                        help="그림자 명도 임계값(낮을수록 더 어두운 영역만 제거)")
+    parser.add_argument("--shadow_saturation_thresh", type=float, default=0.30,
+                        help="그림자 채도 임계값(낮을수록 무채색 그림자만 제거)")
+    parser.add_argument("--min_shadow_grad", type=float, default=22.0,
+                        help="그림자 영역 최소 그래디언트 임계값")
+    parser.add_argument("--min_shadow_local_std", type=float, default=10.0,
+                        help="그림자 영역 최소 로컬 표준편차 임계값")
+    parser.add_argument("--shadow_rel_dark_thresh", type=float, default=0.82,
+                        help="주변 대비 상대 명도 임계값(낮을수록 그림자 판정 강화)")
+    parser.add_argument("--top_region_ratio", type=float, default=0.38,
+                        help="상단 억제 영역 비율(0~1)")
+    parser.add_argument("--top_region_min_grad", type=float, default=34.0,
+                        help="상단 영역 유지용 최소 그래디언트")
+    parser.add_argument("--top_region_min_std", type=float, default=14.0,
+                        help="상단 영역 유지용 최소 로컬 표준편차")
+    parser.add_argument("--bottom_region_ratio", type=float, default=0.35,
+                        help="바닥 영역 비율(0~1, 하혼 영역 높이 비율)")
     parser.add_argument("--use_subpixel_refine", action=argparse.BooleanOptionalAction, default=True,
                         help="Sub-pixel Refinement 활성화")
     parser.add_argument("--use_uniform_distribution", action=argparse.BooleanOptionalAction, default=True,
@@ -59,8 +86,8 @@ def build_parser():
     parser.add_argument("--sp_fp16", action=argparse.BooleanOptionalAction, default=False,
                         help="FP16 추론 활성화 (CUDA 전용)")
     parser.add_argument("--output_dir", type=str, default="result", help="출력 루트 디렉토리")
-    parser.add_argument("--show_display", action="store_true", default=True, 
-                        help="실시간 화면 표시 (기본: 활성화)")
+    parser.add_argument("--show_display", action=argparse.BooleanOptionalAction, default=True,
+                        help="실시간 화면 표시 (기본: 활성화, --no-show_display로 비활성화)")
     
     return parser
 
@@ -68,6 +95,18 @@ def build_parser():
 def run_superpoint_slam(opt):
     """SuperPoint 2D SLAM 실행"""
     out_dir = get_next_subdir(opt.output_dir, "superpoint")
+    
+    # 강한 그림자 억제 프리셋 적용
+    if opt.aggressive_shadow_filter:
+        opt.shadow_value_thresh = 0.38
+        opt.shadow_saturation_thresh = 0.24
+        opt.shadow_rel_dark_thresh = 0.72
+        opt.min_shadow_grad = 32
+        opt.min_shadow_local_std = 16
+        opt.top_region_ratio = 0.58
+        opt.top_region_min_grad = 52
+        opt.top_region_min_std = 20
+        print("🔥 강한 그림자 억제 프리셋 적용\n")
     
     print(f"\n{'='*80}")
     print(f"🚀 SuperPoint 2D SLAM 시작")
@@ -84,10 +123,23 @@ def run_superpoint_slam(opt):
         conf_thresh=opt.slam_conf_thresh,
         nms_dist=opt.slam_nms_dist,
         max_kpts=opt.max_kpts,
+        min_kpts=opt.min_kpts,
         min_parallax_px=opt.min_parallax_px,
         use_subpixel_refine=opt.use_subpixel_refine,
         use_uniform_distribution=opt.use_uniform_distribution,
         uniform_grid=tuple(opt.uniform_grid),
+            use_shadow_filter=opt.use_shadow_filter,
+        kpt_display_radius=opt.kpt_display_radius,
+            use_top_region_filter=opt.use_top_region_filter,
+            shadow_value_thresh=opt.shadow_value_thresh,
+            shadow_saturation_thresh=opt.shadow_saturation_thresh,
+            min_shadow_grad=opt.min_shadow_grad,
+            min_shadow_local_std=opt.min_shadow_local_std,
+            shadow_rel_dark_thresh=opt.shadow_rel_dark_thresh,
+            top_region_ratio=opt.top_region_ratio,
+            top_region_min_grad=opt.top_region_min_grad,
+            top_region_min_std=opt.top_region_min_std,
+            bottom_region_ratio=opt.bottom_region_ratio,
         sp_fp16=opt.sp_fp16,
         output_dir=str(out_dir),
         show_display=opt.show_display,

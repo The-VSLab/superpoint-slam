@@ -165,9 +165,110 @@ class PointFilter:
             return desc_norm >= min_conf
         
         return np.ones(len(kpts), dtype=bool)
+
+    def filter_shadow_points(
+        self,
+        frame: np.ndarray,
+        kpts: np.ndarray,
+        shadow_value_thresh: float = 0.46,
+        shadow_saturation_thresh: float = 0.30,
+        min_shadow_grad: float = 22.0,
+        min_shadow_local_std: float = 10.0,
+        shadow_rel_dark_thresh: float = 0.82,
+    ) -> np.ndarray:
+        """그림자 기반 가짜 포인트 제거.
+
+        어두우면서 저채도(그림자 후보)이고, 동시에 저텍스처/저그래디언트인 포인트를 제거한다.
+        구조물 경계처럼 강한 엣지/코너는 그림자 영역이어도 최대한 유지한다.
+        """
+        if len(kpts) == 0:
+            return np.array([], dtype=bool)
+
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV).astype(np.float32)
+        sat = hsv[:, :, 1] / 255.0
+        val = hsv[:, :, 2] / 255.0
+        val_blur = cv2.GaussianBlur(val, (21, 21), 0)
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+        gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+        grad = cv2.magnitude(gx, gy)
+
+        mean = cv2.boxFilter(gray, cv2.CV_32F, (7, 7), normalize=True)
+        sq_mean = cv2.boxFilter(gray * gray, cv2.CV_32F, (7, 7), normalize=True)
+        var = np.maximum(sq_mean - (mean * mean), 0.0)
+        local_std = np.sqrt(var)
+
+        valid = np.ones(len(kpts), dtype=bool)
+        for idx, (x, y) in enumerate(kpts):
+            xi = int(np.clip(x, 0, self.frame_w - 1))
+            yi = int(np.clip(y, 0, self.frame_h - 1))
+
+            rel_dark = val[yi, xi] / (val_blur[yi, xi] + 1e-6)
+            is_shadow_like = (
+                (val[yi, xi] < shadow_value_thresh)
+                and (sat[yi, xi] < shadow_saturation_thresh)
+                and (rel_dark < shadow_rel_dark_thresh)
+            )
+            is_weak_structure = (grad[yi, xi] < min_shadow_grad) or (local_std[yi, xi] < min_shadow_local_std)
+
+            if is_shadow_like and is_weak_structure:
+                valid[idx] = False
+
+        return valid
+
+    def filter_top_region_points(
+        self,
+        frame: np.ndarray,
+        kpts: np.ndarray,
+        top_region_ratio: float = 0.38,
+        top_region_min_grad: float = 34.0,
+        top_region_min_std: float = 14.0,
+    ) -> np.ndarray:
+        """영상 상단(하늘 영역 가능성 높은 구간) 포인트를 강하게 억제.
+
+        단, 상단의 구조물(표지판/전선지지대 등) 보존을 위해 강한 구조적 점은 유지.
+        """
+        if len(kpts) == 0:
+            return np.array([], dtype=bool)
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+        gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+        grad = cv2.magnitude(gx, gy)
+
+        mean = cv2.boxFilter(gray, cv2.CV_32F, (7, 7), normalize=True)
+        sq_mean = cv2.boxFilter(gray * gray, cv2.CV_32F, (7, 7), normalize=True)
+        var = np.maximum(sq_mean - (mean * mean), 0.0)
+        local_std = np.sqrt(var)
+
+        y_cut = int(np.clip(self.frame_h * top_region_ratio, 0, self.frame_h - 1))
+        valid = np.ones(len(kpts), dtype=bool)
+
+        for idx, (x, y) in enumerate(kpts):
+            xi = int(np.clip(x, 0, self.frame_w - 1))
+            yi = int(np.clip(y, 0, self.frame_h - 1))
+
+            if yi <= y_cut:
+                strong_structure = (grad[yi, xi] >= top_region_min_grad) and (local_std[yi, xi] >= top_region_min_std)
+                if not strong_structure:
+                    valid[idx] = False
+
+        return valid
     
     def apply_all_filters(self, frame: np.ndarray, kpts: np.ndarray, 
-                         desc: np.ndarray = None, confidence: np.ndarray = None) -> Tuple[np.ndarray, np.ndarray]:
+                         desc: np.ndarray = None,
+                         confidence: np.ndarray = None,
+                         use_shadow_filter: bool = True,
+                         use_top_region_filter: bool = True,
+                         shadow_value_thresh: float = 0.46,
+                         shadow_saturation_thresh: float = 0.30,
+                         min_shadow_grad: float = 22.0,
+                         min_shadow_local_std: float = 10.0,
+                         shadow_rel_dark_thresh: float = 0.82,
+                         top_region_ratio: float = 0.38,
+                         top_region_min_grad: float = 34.0,
+                         top_region_min_std: float = 14.0) -> Tuple[np.ndarray, np.ndarray]:
         """모든 필터를 순서대로 적용
         
         Args:
@@ -187,9 +288,32 @@ class PointFilter:
         mask_lines = self.filter_lines(kpts, desc)
         mask_stats = self.filter_statistical_outliers(kpts)
         mask_conf = self.filter_low_confidence(kpts, desc, confidence)
+        if use_shadow_filter:
+            mask_shadow = self.filter_shadow_points(
+                frame,
+                kpts,
+                shadow_value_thresh=shadow_value_thresh,
+                shadow_saturation_thresh=shadow_saturation_thresh,
+                min_shadow_grad=min_shadow_grad,
+                min_shadow_local_std=min_shadow_local_std,
+                shadow_rel_dark_thresh=shadow_rel_dark_thresh,
+            )
+        else:
+            mask_shadow = np.ones(len(kpts), dtype=bool)
+
+        if use_top_region_filter:
+            mask_top = self.filter_top_region_points(
+                frame,
+                kpts,
+                top_region_ratio=top_region_ratio,
+                top_region_min_grad=top_region_min_grad,
+                top_region_min_std=top_region_min_std,
+            )
+        else:
+            mask_top = np.ones(len(kpts), dtype=bool)
         
         # 모든 필터 합치기 (AND 연산)
-        final_mask = mask_sky & mask_lines & mask_stats & mask_conf
+        final_mask = mask_sky & mask_lines & mask_stats & mask_conf & mask_shadow & mask_top
         
         # 필터링된 결과 반환
         filtered_kpts = kpts[final_mask]

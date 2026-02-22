@@ -35,8 +35,10 @@ class VisualSLAM2D:
         sp_scale: float = 0.5,
         sp_interval: int = 1,
         sp_fp16: bool = True,
-        max_kpts: int = 1200,
+        max_kpts: int = 1500,
+        min_kpts: int = 600,
         uniform_grid: tuple[int, int] = (8, 6),
+        kpt_display_radius: int = 1,
         use_subpixel_refine: bool = True,
         use_uniform_distribution: bool = True,
         use_hybrid_matching: bool = False,
@@ -44,6 +46,17 @@ class VisualSLAM2D:
         ransac_thresh: float = 0.8,
         min_parallax_px: float = 2.0,
         com_radius: int = 2,
+        use_shadow_filter: bool = True,
+        use_top_region_filter: bool = True,
+        shadow_value_thresh: float = 0.46,
+        shadow_saturation_thresh: float = 0.30,
+        min_shadow_grad: float = 22.0,
+        min_shadow_local_std: float = 10.0,
+        shadow_rel_dark_thresh: float = 0.82,
+        top_region_ratio: float = 0.38,
+        top_region_min_grad: float = 34.0,
+        top_region_min_std: float = 14.0,
+        bottom_region_ratio: float = 0.35,
     ):
         self.weights_path = str(weights_path)
         self.input_path = str(input_path)
@@ -60,7 +73,11 @@ class VisualSLAM2D:
         self.sp_interval = max(int(sp_interval), 1)
         self.sp_fp16 = bool(sp_fp16)
         self.max_kpts = int(max_kpts)
+        self.min_kpts = int(min_kpts)
+        if self.max_kpts < self.min_kpts:
+            self.max_kpts = self.min_kpts
         self.uniform_grid = (int(uniform_grid[0]), int(uniform_grid[1]))
+        self.kpt_display_radius = max(int(kpt_display_radius), 1)
         self.use_subpixel_refine = bool(use_subpixel_refine)
         self.use_uniform_distribution = bool(use_uniform_distribution)
         self.use_hybrid_matching = bool(use_hybrid_matching)
@@ -68,6 +85,17 @@ class VisualSLAM2D:
         self.ransac_thresh = float(ransac_thresh)
         self.min_parallax_px = float(min_parallax_px)
         self.com_radius = max(int(com_radius), 1)
+        self.use_shadow_filter = bool(use_shadow_filter)
+        self.use_top_region_filter = bool(use_top_region_filter)
+        self.shadow_value_thresh = float(shadow_value_thresh)
+        self.shadow_saturation_thresh = float(shadow_saturation_thresh)
+        self.min_shadow_grad = float(min_shadow_grad)
+        self.min_shadow_local_std = float(min_shadow_local_std)
+        self.shadow_rel_dark_thresh = float(shadow_rel_dark_thresh)
+        self.top_region_ratio = float(top_region_ratio)
+        self.top_region_min_grad = float(top_region_min_grad)
+        self.top_region_min_std = float(top_region_min_std)
+        self.bottom_region_ratio = float(bottom_region_ratio)
 
         if not (0.25 <= self.sp_scale <= 1.0):
             raise ValueError("sp_scale must be in [0.25, 1.0]")
@@ -213,6 +241,72 @@ class VisualSLAM2D:
             return np.empty((0, 2), dtype=np.int32)
         return np.asarray(filtered, dtype=np.int32)
 
+    def _supplement_keypoints_to_min(
+        self,
+        kpts: np.ndarray,
+        desc: np.ndarray,
+        candidate_kpts: np.ndarray,
+        candidate_desc: np.ndarray,
+        heatmap: np.ndarray,
+        target_count: int,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        if target_count <= 0:
+            return kpts, desc
+        if candidate_kpts is None or candidate_desc is None or len(candidate_kpts) == 0:
+            return kpts, desc
+        if desc is None or candidate_desc is None:
+            return kpts, desc
+
+        if len(kpts) >= target_count:
+            return kpts, desc
+
+        if heatmap is None:
+            cand_scores = np.ones((len(candidate_kpts),), dtype=np.float64)
+        else:
+            xi = np.clip(np.round(candidate_kpts[:, 0]).astype(np.int32), 0, heatmap.shape[1] - 1)
+            yi = np.clip(np.round(candidate_kpts[:, 1]).astype(np.int32), 0, heatmap.shape[0] - 1)
+            cand_scores = heatmap[yi, xi].astype(np.float64)
+
+        existing = set()
+        for pt in kpts:
+            existing.add((int(round(pt[0])), int(round(pt[1]))))
+
+        needed = int(target_count - len(kpts))
+        if needed <= 0:
+            return kpts, desc
+
+        selected_idx = []
+        for idx in np.argsort(-cand_scores):
+            p = candidate_kpts[int(idx)]
+            key = (int(round(p[0])), int(round(p[1])))
+            if key in existing:
+                continue
+            selected_idx.append(int(idx))
+            existing.add(key)
+            if len(selected_idx) >= needed:
+                break
+
+        if not selected_idx:
+            return kpts, desc
+
+        add_kpts = candidate_kpts[selected_idx]
+        add_desc = candidate_desc[:, selected_idx]
+        out_kpts = np.vstack([kpts, add_kpts])
+        out_desc = np.concatenate([desc, add_desc], axis=1)
+
+        if len(out_kpts) > target_count:
+            if heatmap is None:
+                out_scores = np.ones((len(out_kpts),), dtype=np.float64)
+            else:
+                xi = np.clip(np.round(out_kpts[:, 0]).astype(np.int32), 0, heatmap.shape[1] - 1)
+                yi = np.clip(np.round(out_kpts[:, 1]).astype(np.int32), 0, heatmap.shape[0] - 1)
+                out_scores = heatmap[yi, xi].astype(np.float64)
+            keep = np.argsort(-out_scores)[:target_count]
+            out_kpts = out_kpts[keep]
+            out_desc = out_desc[:, keep]
+
+        return out_kpts, out_desc
+
     def _geometric_filter_matches(
         self,
         prev_kpts: np.ndarray,
@@ -333,11 +427,26 @@ class VisualSLAM2D:
                         interpolation=cv2.INTER_CUBIC,
                     )
 
+                raw_kpts = kpts.copy()
+                raw_desc = desc.copy() if desc is not None else None
+
                 # *** 포인트 필터링 적용 ***
                 # 구름/하늘, 전선, 통계적 이상치, 낮은 신뢰도 제거
                 if len(kpts) > 0 and desc is not None:
                     kpts_filtered, desc_filtered = self.point_filter.apply_all_filters(
-                        frame, kpts, desc
+                        frame,
+                        kpts,
+                        desc,
+                        use_shadow_filter=self.use_shadow_filter,
+                        use_top_region_filter=self.use_top_region_filter,
+                        shadow_value_thresh=self.shadow_value_thresh,
+                        shadow_saturation_thresh=self.shadow_saturation_thresh,
+                        min_shadow_grad=self.min_shadow_grad,
+                        min_shadow_local_std=self.min_shadow_local_std,
+                        shadow_rel_dark_thresh=self.shadow_rel_dark_thresh,
+                        top_region_ratio=self.top_region_ratio,
+                        top_region_min_grad=self.top_region_min_grad,
+                        top_region_min_std=self.top_region_min_std,
                     )
                     kpts = kpts_filtered
                     desc = desc_filtered
@@ -349,6 +458,48 @@ class VisualSLAM2D:
                     kpts = self._refine_subpixel_com(kpts, heatmap)
                 if self.use_uniform_distribution:
                     kpts, desc = self._select_uniform_keypoints(kpts, desc, heatmap)
+                # Ensure minimum keypoints
+                if len(kpts) < self.min_kpts:
+                    target = min(self.min_kpts, self.max_kpts)
+                    before = len(kpts)
+
+                    # 보충 후보도 하늘/구름/상단 약구조 포인트는 제외해 재유입 방지
+                    cand_mask = self.point_filter.filter_sky_points(frame, raw_kpts)
+                    if self.use_shadow_filter:
+                        cand_mask &= self.point_filter.filter_shadow_points(
+                            frame,
+                            raw_kpts,
+                            shadow_value_thresh=self.shadow_value_thresh,
+                            shadow_saturation_thresh=self.shadow_saturation_thresh,
+                            min_shadow_grad=self.min_shadow_grad,
+                            min_shadow_local_std=self.min_shadow_local_std,
+                            shadow_rel_dark_thresh=self.shadow_rel_dark_thresh,
+                        )
+                    if self.use_top_region_filter:
+                        cand_mask &= self.point_filter.filter_top_region_points(
+                            frame,
+                            raw_kpts,
+                            top_region_ratio=self.top_region_ratio,
+                            top_region_min_grad=self.top_region_min_grad,
+                            top_region_min_std=self.top_region_min_std,
+                        )
+
+                    cand_kpts = raw_kpts[cand_mask]
+                    cand_desc = raw_desc[:, cand_mask] if raw_desc is not None else None
+
+                    kpts, desc = self._supplement_keypoints_to_min(
+                        kpts,
+                        desc,
+                        cand_kpts,
+                        cand_desc,
+                        heatmap,
+                        target,
+                    )
+                    if len(kpts) < self.min_kpts:
+                        shortage = self.min_kpts - len(kpts)
+                        print(f"⚠️ Keypoints {before} -> {len(kpts)} (target {self.min_kpts}), still short by {shortage}")
+                    else:
+                        print(f"✅ Keypoints supplemented: {before} -> {len(kpts)} (target {self.min_kpts})")
             else:
                 kpts = prev_kpts if prev_kpts is not None else np.empty((0, 2), dtype=np.float64)
                 desc = prev_desc
@@ -420,20 +571,23 @@ class VisualSLAM2D:
                         rot = np.array([[c, -s], [s, c]], dtype=np.float64)
                         world = (rot @ local.T).T + pose[:2]
                         
-                        # inlier + 최소 시차 필터링
+                        # inlier + 최소 시차 필터링 + 바닥/사물 구분
+                        bottom_y = int(self.height * (1.0 - self.bottom_region_ratio))
                         if pose_mask is not None:
                             inlier_mask = pose_mask.flatten() > 0
                             parallax = np.linalg.norm((p2 - p1), axis=1)
                             valid = inlier_mask & (parallax >= self.min_parallax_px)
                             inlier_pts = world[valid]
+                            is_floor_array = p2[valid, 1] >= bottom_y  # p2의 y >= bottom_y면 바닥
                             if len(inlier_pts) > 0:
-                                map_points.append((inlier_pts, True))
+                                map_points.append((inlier_pts, True, is_floor_array))
                         else:
                             parallax = np.linalg.norm((p2 - p1), axis=1)
                             valid = parallax >= self.min_parallax_px
                             inlier_pts = world[valid]
+                            is_floor_array = p2[valid, 1] >= bottom_y  # p2의 y >= bottom_y면 바닥
                             if len(inlier_pts) > 0:
-                                map_points.append((inlier_pts, True))
+                                map_points.append((inlier_pts, True, is_floor_array))
                 else:
                     trajectory.append(pose[:2].copy())
             else:
@@ -460,10 +614,17 @@ class VisualSLAM2D:
 
             if self.show_display:
                 vis = frame.copy()
+                bottom_y = int(self.height * (1.0 - self.bottom_region_ratio))
                 for pt in kpts[::3]:
-                    cv2.circle(vis, (int(pt[0]), int(pt[1])), 1, (0, 255, 255), -1, lineType=cv2.LINE_AA)
+                    x, y = int(pt[0]), int(pt[1])
+                    # Red for ground/bottom region, Blue for objects/structures
+                    color = (0, 0, 255) if y >= bottom_y else (255, 0, 0)
+                    cv2.circle(vis, (x, y), self.kpt_display_radius, color, -1, lineType=cv2.LINE_AA)
+                # Draw bottom region threshold line for reference
+                cv2.line(vis, (0, bottom_y), (self.width, bottom_y), (100, 100, 100), 1)
                 cv2.putText(vis, f"Frame: {frame_idx}", (12, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                 cv2.putText(vis, f"Matches: {len(matches)} Inliers: {inliers}", (12, 58), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 220, 0), 2)
+                cv2.putText(vis, f"Red=Floor | Blue=Objects", (12, 86), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 1)
                 cv2.imshow("SuperPoint 2D SLAM", vis)
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
@@ -479,19 +640,27 @@ class VisualSLAM2D:
 
         traj_xy = np.asarray(trajectory, dtype=np.float64)
         
-        # 맵 포인트 결합 (모든 특징점을 표시)
+        # 맵 포인트 결합 (바닥/사물 구분 정보 포함)
         all_pts = []
+        all_is_floor = []
         for item in map_points:
-            if isinstance(item, tuple):
-                pts, _ = item  # is_inlier 무시
+            if isinstance(item, tuple) and len(item) == 3:
+                pts, _, is_floor = item  # (pts, is_inlier, is_floor)
                 all_pts.append(pts)
+                all_is_floor.append(is_floor)
+            elif isinstance(item, tuple) and len(item) == 2:
+                pts, _ = item
+                all_pts.append(pts)
+                all_is_floor.append(np.zeros(len(pts), dtype=bool))  # 기본값: 사물
             else:
                 all_pts.append(item)
+                all_is_floor.append(np.zeros(len(item), dtype=bool))
         
         map_xy = np.vstack(all_pts) if all_pts else np.empty((0, 2), dtype=np.float64)
+        is_floor_array = np.concatenate(all_is_floor) if all_is_floor else np.empty(0, dtype=bool)
         
-        # 2D 맵 렌더링 (경로 + 특징점만 간단하게)
-        topdown = render_topdown_map(traj_xy, map_xy)
+        # 2D 맵 렌더링 (경로 + 특징점: 파란색/빨간색 구분)
+        topdown = render_topdown_map(traj_xy, map_xy, is_floor_array=is_floor_array)
 
         stats = Slam2DStats(
             name="superpoint_2d",

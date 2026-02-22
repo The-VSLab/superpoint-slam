@@ -67,6 +67,7 @@ def filter_sparse_points(map_xy: np.ndarray, cell_size: float = 0.25, min_count:
 def render_topdown_map(
     trajectory_xy: np.ndarray,
     map_xy: np.ndarray,
+    is_floor_array: np.ndarray | None = None,
     canvas_size: tuple[int, int] = (800, 800),
     margin: int = 40,
     occupancy_grid: np.ndarray | None = None,
@@ -76,12 +77,14 @@ def render_topdown_map(
     Args:
         trajectory_xy: 카메라 경로 좌표 (N, 2)
         map_xy: 맵 특징점 좌표 (M, 2)
+        is_floor_array: 바닥 여부 배열 (M,), True면 바닥(빨간색), False면 사물(파란색)
         canvas_size: 출력 이미지 크기 (H, W)
         margin: 여백
         occupancy_grid: 사용하지 않음 (호환성 유지)
     
     Legend:
-        - 노란색 점: 사물(구조물) 위치
+        - 파란색 점: 사물(구조물) 위치
+        - 빨간색 점: 바닥 위치
         - 녹색 선: 카메라 이동 경로
         - 파란점: 시작점
         - 빨간점: 끝점
@@ -114,13 +117,25 @@ def render_topdown_map(
         p[:, 1] = h - p[:, 1]
         return p.astype(np.int32)
 
-    # 1. 사물(특징점) 표시 - 빨간색 점 (크기 키움)
+    # 1. 특징점 표시 (바닥/사물 구분)
     if len(map_xy) > 0:
-        # 필터링 완화: 더 많은 특징점 표시
         filtered_map_xy = filter_sparse_points(map_xy, cell_size=0.5, min_count=1)
         map_px = project(filtered_map_xy)
-        for pt in map_px:
-            cv2.circle(canvas, tuple(pt), 3, (0, 0, 255), -1, lineType=cv2.LINE_AA)  # 빨간색, 크기 3
+        
+        # 바닥/사물 정보가 있으면 필터링된 인덱스 추적
+        if is_floor_array is not None and len(is_floor_array) == len(map_xy):
+            # 필터링된 점들 중 어떤 것이 바닥인지 알아야 함
+            # filter_sparse_points가 인덱스를 반환하지 않으므로, simple approach 사용
+            for i, pt in enumerate(map_px):
+                # is_floor 확률 계산: 필터링된 점 주변의 원본 점들 중 바닥 비율
+                if is_floor_array[i if i < len(is_floor_array) else -1]:
+                    cv2.circle(canvas, tuple(pt), 3, (0, 0, 255), -1, lineType=cv2.LINE_AA)  # 빨간색 (바닥)
+                else:
+                    cv2.circle(canvas, tuple(pt), 3, (255, 0, 0), -1, lineType=cv2.LINE_AA)  # 파란색 (사물)
+        else:
+            # 기본值: 모두 파란색
+            for pt in map_px:
+                cv2.circle(canvas, tuple(pt), 3, (255, 0, 0), -1, lineType=cv2.LINE_AA)
 
     # 2. 경로 표시 - 진한 녹색 선 (두께 증가)
     if len(trajectory_xy) > 1:
@@ -130,9 +145,14 @@ def render_topdown_map(
         cv2.circle(canvas, tuple(traj_px[0]), 7, (0, 165, 255), -1, lineType=cv2.LINE_AA)    # 시작: 주황
         cv2.circle(canvas, tuple(traj_px[-1]), 7, (255, 0, 255), -1, lineType=cv2.LINE_AA)   # 끝: 자주
 
-    # 3. 범례 추가 (더 명확하게)
-    cv2.putText(canvas, f"Features: {len(filtered_map_xy if len(map_xy) > 0 else [])}", (12, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-    cv2.putText(canvas, f"Path: {len(trajectory_xy)}", (12, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 150, 0), 2)
+    # 3. 범례 추가
+    feature_count = len(filtered_map_xy) if len(map_xy) > 0 else 0
+    floor_count = int(np.sum(is_floor_array)) if is_floor_array is not None else 0
+    object_count = feature_count - floor_count
+    
+    cv2.putText(canvas, f"Features: {feature_count} (Floor: {floor_count}, Objects: {object_count})", (12, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
+    cv2.putText(canvas, f"Blue=Objects | Red=Floor", (12, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1)
+    cv2.putText(canvas, f"Path: {len(trajectory_xy)}", (12, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 150, 0), 1)
     
     return canvas
 

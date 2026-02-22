@@ -7,7 +7,7 @@ width: 640
 
 # [학습 하이퍼파라미터]
 epochs: 20
-batch_size: 4
+batch_size: 16
 val_batch_size: 8
 lr: 1.0e-4
 num_workers: 8
