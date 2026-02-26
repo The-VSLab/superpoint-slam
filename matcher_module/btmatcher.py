@@ -10,78 +10,29 @@ import cv2
 
 class BTMatcher:
     def __init__(self, nn_thresh=0.7, use_cuda=True, mutual=False):
-        """
-        :param nn_thresh: Descriptor 거리 임계값 (0.7 추천)
-        :param use_cuda: CUDA 사용 여부
-        :param mutual: 상호 매칭(Mutual Check) 사용 여부
-        """
         self.nn_thresh = nn_thresh
         self.mutual = mutual
-        self.use_cuda = use_cuda and torch.cuda.is_available()
-        self.device = torch.device("cuda" if self.use_cuda else "cpu")
+        self.device = torch.device("cuda" if use_cuda and torch.cuda.is_available() else "cpu")
 
     def match(self, desc1, desc2):
-        """
-        [수정됨] 불필요한 kpts 인자를 제거하고 desc1, desc2만 받습니다.
-        Args:
-            desc1: [256, N1] (Descriptor)
-            desc2: [256, N2]
-        Returns:
-            matches: [M, 2] numpy array
-        """
-        # 1. 예외 처리: 디스크립터가 없으면 빈 배열 반환
-        if desc1.shape[1] == 0 or desc2.shape[1] == 0:
-            return np.empty((0, 2), dtype=int)
+        """FP16 가속을 이용한 디스크립터 매칭"""
+        if desc1.shape[1] == 0 or desc2.shape[1] == 0: return np.empty((0, 2), dtype=int)
 
-        # 2. Numpy -> Tensor 변환 및 Device 이동
-        if isinstance(desc1, np.ndarray):
-            d1 = torch.from_numpy(desc1).float().to(self.device)
-        else:
-            d1 = desc1.float().to(self.device)
+        d1 = torch.from_numpy(desc1).to(self.device).t().half() # FP16 변환
+        d2 = torch.from_numpy(desc2).to(self.device).t().half()
+
+        with torch.no_grad():
+            dist = torch.cdist(d1, d2, p=2) # [N1, N2] 거리 행렬
+            min_dist, idxs = torch.min(dist, dim=1)
             
-        if isinstance(desc2, np.ndarray):
-            d2 = torch.from_numpy(desc2).float().to(self.device)
-        else:
-            d2 = desc2.float().to(self.device)
-
-        # ==========================================================
-        # ★ 차원 전치 (Transpose) ★
-        # SuperPoint 출력 [256, N] -> 거리 계산을 위해 [N, 256]으로 변경
-        # ==========================================================
-        d1 = d1.t()
-        d2 = d2.t()
-
-        # 3. 거리 행렬 계산 (Euclidean Distance)
-        try:
-            dist_mat = torch.cdist(d1, d2, p=2) # [N1, N2]
-        except RuntimeError:
-            # VRAM 부족 시 CPU로 폴백
-            d1 = d1.cpu()
-            d2 = d2.cpu()
-            dist_mat = torch.cdist(d1, d2, p=2)
-
-        # 4. Nearest Neighbor Search
-        # min_dist: 최소 거리, idxs: 인덱스
-        min_dist, idxs = torch.min(dist_mat, dim=1)
-
-        # 5. 매칭 필터링
-        if self.mutual:
-            # 상호 매칭 (Mutual Check)
-            min_dist2, idxs2 = torch.min(dist_mat, dim=0)
-            match_check = (idxs2[idxs] == torch.arange(d1.shape[0], device=d1.device))
-            valid_mask = (min_dist < self.nn_thresh) & match_check
-        else:
-            # 단순 거리 임계값
-            valid_mask = min_dist < self.nn_thresh
-
-        # 6. 결과 인덱스 추출
-        idx1 = torch.arange(d1.shape[0], device=d1.device)[valid_mask]
-        idx2 = idxs[valid_mask]
-
-        matches = torch.stack([idx1, idx2], dim=1)
-        
-        return matches.cpu().numpy().astype(int)
-
+            mask = min_dist < self.nn_thresh
+            if self.mutual:
+                min_dist2, idxs2 = torch.min(dist, dim=0)
+                mask &= (idxs2[idxs] == torch.arange(len(d1), device=self.device))
+            
+        idx1 = torch.arange(len(d1), device=self.device)[mask]
+        idx2 = idxs[mask]
+        return torch.stack([idx1, idx2], dim=1).cpu().numpy().astype(int)
 # ==============================================================================
 # 래퍼(Wrapper) 함수들
 # ==============================================================================

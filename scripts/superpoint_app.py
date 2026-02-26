@@ -47,8 +47,8 @@ def build_parser():
                         help="특징점 신뢰도 임계값 (낮을수록 특징점 증가)")
     parser.add_argument("--slam_nms_dist", type=int, default=4, help="NMS 거리")
     parser.add_argument("--nn_thresh", type=float, default=0.7, help="매칭 임계값")
-    parser.add_argument("--max_kpts", type=int, default=1500, help="프레임당 최대 특징점 개수(기본: 1500)")
-    parser.add_argument("--min_kpts", type=int, default=600, help="프레임당 최소 특징점 개수(기본: 600)")
+    parser.add_argument("--max_kpts", type=int, default=200, help="프레임당 최대 특징점 개수(기본: 200)")
+    parser.add_argument("--min_kpts", type=int, default=200, help="프레임당 최소 특징점 개수(기본: 200)")
     parser.add_argument("--min_parallax_px", type=float, default=2.0,
                         help="맵 포인트 추가 최소 시차(픽셀)")
     parser.add_argument("--kpt_display_radius", type=int, default=1,
