@@ -24,10 +24,11 @@ for path in [ROOT_DIR, SCRIPTS_DIR, CUR_DIR]:
 
 # [2] 모델 임포트
 try:
-    from py_superpoint import SuperPointNetV2  # Student (MobileNet)
-    from original_superpoint import SuperPoint # Teacher (Original VGG)
+    from models.superpoint_mobilenet import SuperPointNetV2  # Student (MobileNet)
+    from learning.original_superpoint import SuperPoint # Teacher (Original VGG)
 except ImportError:
-    from scripts.py_superpoint import SuperPointNetV2
+    from models.superpoint_mobilenet import SuperPointNetV2
+    from training.original_superpoint import SuperPoint
     from training.original_superpoint import SuperPoint
 
 # --- [3] 핵심 유틸리티 함수 ---
@@ -100,7 +101,14 @@ def evaluate(student, teacher, loader, args, device):
                 semi, desc = student(img)
                 det_loss = F.cross_entropy(semi, labels, weight=args._ce_weight)
                 if teacher_desc is not None:
-                    desc_loss = F.mse_loss(desc, teacher_desc)
+                    # Cosine Embedding Loss로 변경: 벡터 방향성(매칭 성능) 강화를 위해
+                    # b*c*h*w 형태를 (N, c)로 변환
+                    b, c, h, w = desc.shape
+                    student_desc_flat = desc.permute(0, 2, 3, 1).reshape(-1, c)
+                    teacher_desc_flat = teacher_desc.permute(0, 2, 3, 1).reshape(-1, c)
+                    # 동일한 위치의 디스크립터는 같은 방향(1)을 가리키도록 학습
+                    target = torch.ones(student_desc_flat.size(0), device=desc.device)
+                    desc_loss = F.cosine_embedding_loss(student_desc_flat, teacher_desc_flat, target)
                 else:
                     desc_loss = torch.zeros((), device=det_loss.device)
                 loss = det_loss + (float(args.desc_weight) * desc_loss)
@@ -211,7 +219,12 @@ class ImageFolderDataset(Dataset):
 # --- [5] 메인 학습 함수 ---
 
 def train(args):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
     if device.type == "cuda":
         torch.backends.cudnn.benchmark = True
         torch.set_float32_matmul_precision("high")
@@ -221,12 +234,13 @@ def train(args):
     teacher = SuperPoint(return_desc=use_teacher_desc).to(device)
     
     # 가중치 로드
-    w_path = os.path.join(ROOT_DIR, "superpoint_v6_from_tf.pth")
+    w_path = os.path.join(ROOT_DIR, "superpoint_v1.pth")
     teacher.load_state_dict(torch.load(w_path, map_location=device, weights_only=False))
     teacher.eval()
 
     optimizer = torch.optim.AdamW(student.parameters(), lr=float(args.lr))
-    scaler = torch.amp.GradScaler('cuda', enabled=args.fp16) # FP16 가속
+    use_amp = args.fp16 and device.type == "cuda"
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp) # FP16 가속
 
     ce_weight = torch.ones(65, device=device)
     ce_weight[64] = args.dustbin_weight # 배경 억제
@@ -314,11 +328,16 @@ def train(args):
                 img = img.to(device, non_blocking=True)
                 labels, teacher_mask, teacher_desc = get_teacher_labels(teacher, img)
                 
-                with torch.amp.autocast('cuda', enabled=args.fp16):
+                with torch.cuda.amp.autocast(enabled=use_amp):
                     semi, desc = student(img)
                     det_loss = F.cross_entropy(semi, labels, weight=ce_weight)
                     if use_teacher_desc and float(args.desc_weight) > 0 and teacher_desc is not None:
-                        desc_loss = F.mse_loss(desc, teacher_desc)
+                        # Cosine Embedding Loss로 변경
+                        b, c, h, w = desc.shape
+                        student_desc_flat = desc.permute(0, 2, 3, 1).reshape(-1, c)
+                        teacher_desc_flat = teacher_desc.permute(0, 2, 3, 1).reshape(-1, c)
+                        target = torch.ones(student_desc_flat.size(0), device=desc.device)
+                        desc_loss = F.cosine_embedding_loss(student_desc_flat, teacher_desc_flat, target)
                     else:
                         desc_loss = torch.zeros((), device=det_loss.device)
                     loss = det_loss + (float(args.desc_weight) * desc_loss)

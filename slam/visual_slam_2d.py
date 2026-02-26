@@ -130,7 +130,12 @@ class VisualSLAM2D:
             nn_thresh=self.nn_thresh,
             cuda=self.use_cuda,
         )
-        self.matcher = BTMatcher(nn_thresh=self.nn_thresh, use_cuda=self.use_cuda, mutual=True)
+        self.matcher = BTMatcher(
+            nn_thresh=self.nn_thresh, 
+            use_cuda=self.use_cuda, 
+            mutual=True,
+            ratio_thresh=self.ratio_thresh
+        )
         
         # 포인트 필터 초기화 (구름/전선/노이즈 제거)
         self.point_filter = PointFilter(frame_h=self.height, frame_w=self.width)

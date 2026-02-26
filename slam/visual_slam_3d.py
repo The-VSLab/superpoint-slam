@@ -60,12 +60,15 @@ class VisualSLAM3D:
         weights_path,
         input_path,
         nn_thresh=0.7,
+        conf_thresh=0.003,
         jetson_scale=None,
         sp_scale=1.0,
         sp_interval=1,
         sp_fp16=False,
+        highway_mode=False,
     ):
         # 1. 장치 결정
+        self.highway_mode = highway_mode
         self.device = get_optimal_device()
         # SuperPointFrontend는 내부 설계상 True/False(CUDA 사용여부)를 받는 경우가 많으므로 호환성 유지
         self.use_cuda = (self.device == "cuda")
@@ -98,11 +101,16 @@ class VisualSLAM3D:
         self.fe = SuperPointFrontend(
             weights_path=weights_path,
             nms_dist=4,
-            conf_thresh=0.003,
-            nn_thresh=0.7,
+            conf_thresh=conf_thresh,
+            nn_thresh=nn_thresh,
             cuda=self.use_cuda,
         )
-        self.matcher = BTMatcher(nn_thresh=nn_thresh, use_cuda=self.use_cuda, mutual=True)
+        self.matcher = BTMatcher(
+            nn_thresh=nn_thresh, 
+            use_cuda=self.use_cuda, 
+            mutual=True,
+            ratio_thresh=0.85
+        )
         self.loop_closure = LoopClosureManager(
             matcher=self.matcher,
             K=self.K,
@@ -285,19 +293,22 @@ class VisualSLAM3D:
                     print(f"frame {frame_idx}: matches={match_count}, inliers={inliers}, ratio={inlier_ratio:.3f}, t={t_vec.round(3)}")
 
                     if np.isfinite(t_vec).all():
-                        # --- [안정화 로직: 고속도로 모드] ---
-                        # 1. 후진 방지
-                        if t_vec[2] < 0: t_vec = -t_vec; R = R.T
+                        # --- [안정화 로직: 고속도로 모드 (옵션)] ---
+                        if self.highway_mode:
+                            # 1. 후진 방지
+                            if t_vec[2] < 0: t_vec = -t_vec; R = R.T
+                            
+                            # 2. 횡이동 억제 (Turn이 작으면 X 이동 억제)
+                            turn_amount = np.abs(np.arctan2(R[0,2], R[2,2]))
+                            damp_x = np.clip(turn_amount * 10.0, 0.1, 1.0)
+                            t_vec[0] *= damp_x 
+                            t_vec[1] *= 0.05 # Y(상하) 억제
+                            
+                            # 3. 관성 적용 (이전 속도와 혼합)
+                            t_vec = t_vec * 0.6 + self.last_t_vec * 0.4
                         
-                        # 2. 횡이동 억제 (Turn이 작으면 X 이동 억제)
-                        turn_amount = np.abs(np.arctan2(R[0,2], R[2,2]))
-                        damp_x = np.clip(turn_amount * 10.0, 0.1, 1.0)
-                        t_vec[0] *= damp_x 
-                        t_vec[1] *= 0.05 # Y(상하) 억제
-                        
-                        # 3. 관성 적용 (이전 속도와 혼합)
-                        t_vec = t_vec * 0.6 + self.last_t_vec * 0.4
-                        t_vec = t_vec / (np.linalg.norm(t_vec) + 1e-6) # 정규화 (속도 1.0 고정)
+                        # Monocular SLAM 스케일 모호성 방지를 위해 길이 1로 정규화
+                        t_vec = t_vec / (np.linalg.norm(t_vec) + 1e-6)
                         
                         self.last_t_vec = t_vec
                         
@@ -541,13 +552,17 @@ if __name__ == '__main__':
     parser.add_argument('--sp-scale', type=float, default=0.5)
     parser.add_argument('--sp-interval', type=int, default=2)
     parser.add_argument('--sp-fp16', action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument('--highway-mode', action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument('--conf-thresh', type=float, default=0.003)
     args = parser.parse_args()
     slam = VisualSLAM3D(
         weights_path=args.weights,
         input_path=args.input,
+        conf_thresh=args.conf_thresh,
         jetson_scale=args.jetson_scale,
         sp_scale=args.sp_scale,
         sp_interval=args.sp_interval,
         sp_fp16=args.sp_fp16,
+        highway_mode=args.highway_mode,
     )
     slam.process()

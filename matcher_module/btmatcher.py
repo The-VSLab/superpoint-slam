@@ -9,14 +9,16 @@ import numpy as np
 import cv2
 
 class BTMatcher:
-    def __init__(self, nn_thresh=0.7, use_cuda=True, mutual=False):
+    def __init__(self, nn_thresh=0.7, use_cuda=True, mutual=False, ratio_thresh=0.85):
         """
         :param nn_thresh: Descriptor 거리 임계값 (0.7 추천)
         :param use_cuda: CUDA 사용 여부
         :param mutual: 상호 매칭(Mutual Check) 사용 여부
+        :param ratio_thresh: Lowe's Ratio Test 임계값 (0.85 추천, 1.0이면 비활성화)
         """
         self.nn_thresh = nn_thresh
         self.mutual = mutual
+        self.ratio_thresh = ratio_thresh
         self.use_cuda = use_cuda and torch.cuda.is_available()
         self.device = torch.device("cuda" if self.use_cuda else "cpu")
 
@@ -60,19 +62,25 @@ class BTMatcher:
             d2 = d2.cpu()
             dist_mat = torch.cdist(d1, d2, p=2)
 
-        # 4. Nearest Neighbor Search
-        # min_dist: 최소 거리, idxs: 인덱스
-        min_dist, idxs = torch.min(dist_mat, dim=1)
+        # 4. Nearest Neighbor Search (Lowe's Ratio Test를 위해 2개 추출)
+        if self.ratio_thresh < 1.0 and d2.shape[0] >= 2:
+            top_dist, top_idxs = torch.topk(dist_mat, k=2, dim=1, largest=False)
+            min_dist = top_dist[:, 0]
+            idxs = top_idxs[:, 0]
+            ratio_mask = (min_dist < self.ratio_thresh * top_dist[:, 1])
+        else:
+            min_dist, idxs = torch.min(dist_mat, dim=1)
+            ratio_mask = torch.ones_like(min_dist, dtype=torch.bool)
 
         # 5. 매칭 필터링
         if self.mutual:
             # 상호 매칭 (Mutual Check)
             min_dist2, idxs2 = torch.min(dist_mat, dim=0)
             match_check = (idxs2[idxs] == torch.arange(d1.shape[0], device=d1.device))
-            valid_mask = (min_dist < self.nn_thresh) & match_check
+            valid_mask = (min_dist < self.nn_thresh) & match_check & ratio_mask
         else:
             # 단순 거리 임계값
-            valid_mask = min_dist < self.nn_thresh
+            valid_mask = (min_dist < self.nn_thresh) & ratio_mask
 
         # 6. 결과 인덱스 추출
         idx1 = torch.arange(d1.shape[0], device=d1.device)[valid_mask]

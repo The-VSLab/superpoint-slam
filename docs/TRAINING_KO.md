@@ -113,5 +113,5 @@ python learning/train_superpoint_v13.py --config learning/config_v13.yml
 - `max_rotate`, `max_scale`, `max_perspective`
 
 ## 참고
-- Teacher 가중치는 코드 내부에서 `superpoint_v6_from_tf.pth`를 로드합니다.
+- Teacher 가중치는 코드 내부에서 `superpoint_v1.pth` (MagicLeap 오리지널 완전체)를 로드합니다.
 - 학습 결과는 `checkpoints/v14_final_epoch_*.pth`로 저장됩니다.

@@ -11,9 +11,10 @@ class SuperPointFrontend(object):
     """PyTorch 네트워크를 감싸서 이미지 전처리 및 후처리를 도와주는 클래스"""
 
     def __init__(
-        self, weights_path=None, nms_dist=4, conf_thresh=0.015, nn_thresh=0.7, cuda=False
+        self, weights_path=None, nms_dist=4, conf_thresh=0.015, nn_thresh=0.7, max_keypoints=1000, cuda=False
     ):
         self.name = "SuperPointV2"
+        self.max_keypoints = max_keypoints
         self.cuda = cuda
         self.nms_dist = nms_dist
         self.conf_thresh = conf_thresh
@@ -184,20 +185,19 @@ class SuperPointFrontend(object):
         toremoveH = np.logical_or(pts[1, :] < bord, pts[1, :] >= (H - bord))
         toremove = np.logical_or(toremoveW, toremoveH)
         pts = pts[:, ~toremove]
-        # 점 개수 변경 코드
-        # 상위 600개 특징점만 유지
-        max_points = 600
-        if pts.shape[1] > max_points:
-            pts = pts[:, :max_points]
+        # 점 개수 제한
+        if self.max_keypoints > 0 and pts.shape[1] > self.max_keypoints:
+            pts = pts[:, :self.max_keypoints]
         # --- 디스크립터 처리
         D = coarse_desc.shape[1]
         if pts.shape[1] == 0:
             desc = np.zeros((D, 0))
         else:
             # 2D 점 위치를 사용하여 디스크립터 맵에 보간
+            # align_corners=True일 때 올바른 매핑 식: (coord / (size - 1)) * 2 - 1
             samp_pts = torch.from_numpy(pts[:2, :].copy())
-            samp_pts[0, :] = (samp_pts[0, :] / (float(W) / 2.0)) - 1.0
-            samp_pts[1, :] = (samp_pts[1, :] / (float(H) / 2.0)) - 1.0
+            samp_pts[0, :] = (samp_pts[0, :] / float(W - 1)) * 2.0 - 1.0
+            samp_pts[1, :] = (samp_pts[1, :] / float(H - 1)) * 2.0 - 1.0
             samp_pts = samp_pts.transpose(0, 1).contiguous()
             samp_pts = samp_pts.view(1, 1, -1, 2)
             samp_pts = samp_pts.float()

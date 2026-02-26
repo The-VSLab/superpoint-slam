@@ -16,15 +16,6 @@ def batched_nms(scores, nms_radius: int):
         new_max_mask = supp_scores == max_pool(supp_scores)
         max_mask = max_mask | (new_max_mask & (~supp_mask))
     return torch.where(max_mask, scores, zeros)
-
-class VGGBlock(nn.Sequential):
-    def __init__(self, c_in, c_out, kernel_size, relu=True):
-        super().__init__(OrderedDict([
-            ("conv", nn.Conv2d(c_in, c_out, kernel_size, stride=1, padding=(kernel_size-1)//2)),
-            ("activation", nn.ReLU(inplace=True) if relu else nn.Identity()),
-            ("bn", nn.BatchNorm2d(c_out, eps=0.001))
-        ]))
-
 class SuperPoint(nn.Module):
     # [엄격한 모서리 선별 설정]
     default_conf = {
@@ -32,8 +23,6 @@ class SuperPoint(nn.Module):
         "max_num_keypoints": 600,     # [고정] Top-K 600개 제한
         "detection_threshold": 0.025, # [상향] 확실한 코너만 인정
         "remove_borders": 12,         # [상향] 테두리 노이즈 제거
-        "descriptor_dim": 256,
-        "channels": [64, 64, 128, 128, 256],
     }
 
     def __init__(self, **conf):
@@ -42,24 +31,52 @@ class SuperPoint(nn.Module):
         self.stride = 8
         self.return_desc = bool(getattr(self.conf, "return_desc", True))
         
-        # 가중치 파일 v6 구조와 100% 일치하는 backbone
-        self.backbone = nn.Sequential(
-            nn.Sequential(VGGBlock(1, 64, 3), VGGBlock(64, 64, 3), nn.MaxPool2d(2, 2)),
-            nn.Sequential(VGGBlock(64, 64, 3), VGGBlock(64, 64, 3), nn.MaxPool2d(2, 2)),
-            nn.Sequential(VGGBlock(64, 128, 3), VGGBlock(128, 128, 3), nn.MaxPool2d(2, 2)),
-            nn.Sequential(VGGBlock(128, 128, 3), VGGBlock(128, 128, 3))
-        )
-        self.detector = nn.Sequential(VGGBlock(128, 256, 3), VGGBlock(256, 65, 1, relu=False))
-        self.descriptor = nn.Sequential(VGGBlock(128, 256, 3), VGGBlock(256, 256, 1, relu=False))
+        self.relu = torch.nn.ReLU(inplace=True)
+        self.pool = torch.nn.MaxPool2d(kernel_size=2, stride=2)
+        
+        # Shared Encoder (Backbone)
+        self.conv1a = torch.nn.Conv2d(1, 64, kernel_size=3, stride=1, padding=1)
+        self.conv1b = torch.nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1)
+        self.conv2a = torch.nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1)
+        self.conv2b = torch.nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1)
+        self.conv3a = torch.nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1)
+        self.conv3b = torch.nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=1)
+        self.conv4a = torch.nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=1)
+        self.conv4b = torch.nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=1)
+        
+        # Detector Head
+        self.convPa = torch.nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1)
+        self.convPb = torch.nn.Conv2d(256, 65, kernel_size=1, stride=1, padding=0)
+        
+        # Descriptor Head
+        self.convDa = torch.nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1)
+        self.convDb = torch.nn.Conv2d(256, 256, kernel_size=1, stride=1, padding=0)
 
     def forward(self, data):
         image = data["image"]
-        features = self.backbone(image)
         
-        logits = self.detector(features)
+        # Share Encoder
+        x = self.relu(self.conv1a(image))
+        x = self.relu(self.conv1b(x))
+        x = self.pool(x)
+        x = self.relu(self.conv2a(x))
+        x = self.relu(self.conv2b(x))
+        x = self.pool(x)
+        x = self.relu(self.conv3a(x))
+        x = self.relu(self.conv3b(x))
+        x = self.pool(x)
+        x = self.relu(self.conv4a(x))
+        x = self.relu(self.conv4b(x))
+        
+        # Detector Head
+        cPa = self.relu(self.convPa(x))
+        logits = self.convPb(cPa)
+        
+        # Descriptor Head
         desc = None
         if self.return_desc:
-            desc = self.descriptor(features)
+            cDa = self.relu(self.convDa(x))
+            desc = self.convDb(cDa)
             desc = torch.nn.functional.normalize(desc, p=2, dim=1)
         scores = torch.nn.functional.softmax(logits, 1)[:, :-1]
         b, _, h, w = scores.shape

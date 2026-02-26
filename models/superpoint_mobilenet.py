@@ -26,12 +26,24 @@ class SuperPointNetV2(nn.Module):
         # MobileNetV2의 해당 지점 출력 채널 수는 32입니다.
         in_channels = 32
 
-        # 3. 특징점 검출 헤드 (Detector Head)
-        self.convPa = nn.Conv2d(in_channels, 256, kernel_size=3, stride=1, padding=1)
+        # 3. 특징점 검출 헤드 (Detector Head) - Depthwise Separable Conv 적용
+        self.convPa = nn.Sequential(
+            # Depthwise: 채널 단위 공간 연산
+            nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=1, padding=1, groups=in_channels, bias=False),
+            nn.BatchNorm2d(in_channels),
+            nn.ReLU(inplace=True),
+            # Pointwise: 채널 확장 연산
+            nn.Conv2d(in_channels, 256, kernel_size=1, stride=1, padding=0, bias=True)
+        )
         self.convPb = nn.Conv2d(256, 65, kernel_size=1, stride=1, padding=0)
 
-        # 4. 디스크립터 헤드 (Descriptor Head)
-        self.convDa = nn.Conv2d(in_channels, 256, kernel_size=3, stride=1, padding=1)
+        # 4. 디스크립터 헤드 (Descriptor Head) - Depthwise Separable Conv 적용
+        self.convDa = nn.Sequential(
+            nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=1, padding=1, groups=in_channels, bias=False),
+            nn.BatchNorm2d(in_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(in_channels, 256, kernel_size=1, stride=1, padding=0, bias=True)
+        )
         self.convDb = nn.Conv2d(256, 256, kernel_size=1, stride=1, padding=0)
 
     def forward(self, x):
@@ -42,12 +54,16 @@ class SuperPointNetV2(nn.Module):
         x = self.backbone(x)  # [배치크기, 32, 높이/8, 너비/8]
 
         # 특징점 검출 헤드
+        # convPa 에는 이미 내부적으로 ReLU가 적용되지만 논문 호환성을 맞추기 위해 밖에서도 묶어줄 수 있음
+        # 그러나 nn.Sequential 내부에 이미 ReLU가 적용된 상태이기 때문에 바로 처리.
         cPa = F.relu(self.convPa(x), inplace=True)
         semi = self.convPb(cPa)
 
         # 디스크립터 헤드
         cDa = F.relu(self.convDa(x), inplace=True)
         desc = self.convDb(cDa)
-        desc = F.normalize(desc, p=2, dim=1, eps=1e-8)
+        
+        # 모델 내부 L2 정규화는 frontend에서 보간 후 다시 수행하므로 생략하여 속도 개선
+        # desc = F.normalize(desc, p=2, dim=1, eps=1e-8) 
 
         return semi, desc
