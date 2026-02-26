@@ -8,7 +8,7 @@ import numpy as np
 import torch
 
 from matcher_module import BTMatcher
-from scripts.py_superpoint import SuperPointFrontend
+from frontend.superpoint_frontend import SuperPointFrontend
 from tracking import PointFilter
 from .slam2d_common import (
     Slam2DStats,
@@ -127,10 +127,6 @@ class VisualSLAM2D:
             conf_thresh=self.conf_thresh,
             nn_thresh=self.nn_thresh,
             cuda=self.use_cuda,
-            head_hidden=256,
-            descriptor_dim=128,
-            use_fp16=self.sp_fp16,
-            top_k=self.max_kpts,
         )
         self.matcher = BTMatcher(nn_thresh=self.nn_thresh, use_cuda=self.use_cuda, mutual=True)
         

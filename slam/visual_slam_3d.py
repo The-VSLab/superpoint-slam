@@ -8,9 +8,9 @@ import time
 import sys
 
 # 기존 모듈
-from scripts.py_superpoint import SuperPointFrontend
+from frontend.superpoint_frontend import SuperPointFrontend
 from matcher_module import BTMatcher
-from scripts.loop_closure import LoopClosureManager
+from slam.loop_closure import LoopClosureManager
 
 # --- 환경별 장치 자동 설정 함수 추가 ---
 def get_optimal_device():
@@ -101,9 +101,6 @@ class VisualSLAM3D:
             conf_thresh=0.003,
             nn_thresh=0.7,
             cuda=self.use_cuda,
-            head_hidden=256,
-            descriptor_dim=128,
-            use_fp16=sp_fp16,
         )
         self.matcher = BTMatcher(nn_thresh=nn_thresh, use_cuda=self.use_cuda, mutual=True)
         self.loop_closure = LoopClosureManager(
