@@ -662,7 +662,8 @@ class VisualSLAM2D:
                 vis = frame.copy()
                 bottom_y = int(self.height * (1.0 - self.bottom_region_ratio))
                 # only draw non-floor keypoints (skip points below threshold)
-                for pt in kpts[::3]:
+                # display every 5th keypoint to reduce visual clutter
+                for pt in kpts[::5]:
                     x, y = int(pt[0]), int(pt[1])
                     if y < bottom_y:
                         cv2.circle(vis, (x, y), self.kpt_display_radius, (255, 0, 0), -1, lineType=cv2.LINE_AA)
