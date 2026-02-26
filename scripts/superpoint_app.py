@@ -77,6 +77,8 @@ def build_parser():
                         help="상단 영역 유지용 최소 로컬 표준편차")
     parser.add_argument("--bottom_region_ratio", type=float, default=0.35,
                         help="바닥 영역 비율(0~1, 하혼 영역 높이 비율)")
+    parser.add_argument("--filter_floor", action="store_true",
+                        help="입력 영상 아래쪽(bottom_region_ratio) 영역을 마스킹하여 특징점 추출 방지")
     parser.add_argument("--use_subpixel_refine", action=argparse.BooleanOptionalAction, default=True,
                         help="Sub-pixel Refinement 활성화")
     parser.add_argument("--use_uniform_distribution", action=argparse.BooleanOptionalAction, default=True,
@@ -132,27 +134,24 @@ def run_superpoint_slam(opt):
         use_subpixel_refine=opt.use_subpixel_refine,
         use_uniform_distribution=opt.use_uniform_distribution,
         uniform_grid=tuple(opt.uniform_grid),
-            use_shadow_filter=opt.use_shadow_filter,
+        use_shadow_filter=opt.use_shadow_filter,
         kpt_display_radius=opt.kpt_display_radius,
-            use_top_region_filter=opt.use_top_region_filter,
-            shadow_value_thresh=opt.shadow_value_thresh,
-            shadow_saturation_thresh=opt.shadow_saturation_thresh,
-            min_shadow_grad=opt.min_shadow_grad,
-            min_shadow_local_std=opt.min_shadow_local_std,
-            shadow_rel_dark_thresh=opt.shadow_rel_dark_thresh,
-            top_region_ratio=opt.top_region_ratio,
-            top_region_min_grad=opt.top_region_min_grad,
-            top_region_min_std=opt.top_region_min_std,
-            bottom_region_ratio=opt.bottom_region_ratio,
-        sp_fp16=opt.sp_fp16,
-        deterministic=opt.deterministic,
-        seed=opt.seed,
+        use_top_region_filter=opt.use_top_region_filter,
+        shadow_value_thresh=opt.shadow_value_thresh,
+        shadow_saturation_thresh=opt.shadow_saturation_thresh,
+        min_shadow_grad=opt.min_shadow_grad,
+        min_shadow_local_std=opt.min_shadow_local_std,
+        shadow_rel_dark_thresh=opt.shadow_rel_dark_thresh,
+        top_region_ratio=opt.top_region_ratio,
+        top_region_min_grad=opt.top_region_min_grad,
+        top_region_min_std=opt.top_region_min_std,
+        bottom_region_ratio=opt.bottom_region_ratio,
+        filter_floor=opt.filter_floor,
         output_dir=str(out_dir),
         show_display=opt.show_display,
     )
-    
     stats = slam.process()
-    
+
     print(f"\n{'='*80}")
     print(f"✅ SuperPoint 완료!")
     print(f"{'='*80}")
@@ -164,7 +163,7 @@ def run_superpoint_slam(opt):
     print(f"📍 궤적: {stats.trajectory_length:.1f}m")
     print(f"💾 저장: {out_dir}/topdown_map.png")
     print(f"{'='*80}\n")
-    
+
     return stats
 
 

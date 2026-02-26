@@ -160,7 +160,19 @@ class PointFilter:
         
         # desc가 있으면 norm으로 신뢰도 추정
         if desc is not None and len(desc) > 0:
-            desc_norm = np.linalg.norm(desc, axis=0 if desc.shape[0] < desc.shape[1] else 1)
+            # normalize descriptor orientation so that axis=0 corresponds
+            # to keypoint index. desc may be (dim, N) or (N, dim).
+            if desc.shape[0] == len(kpts):
+                arr = desc
+            elif desc.shape[1] == len(kpts):
+                arr = desc.T
+            else:
+                # cannot match dimensions; avoid dropping any points
+                # but log a warning for debugging.
+                print("[PointFilter] warning: descriptor shape", desc.shape,
+                      "does not match keypoint count", len(kpts))
+                return np.ones(len(kpts), dtype=bool)
+            desc_norm = np.linalg.norm(arr, axis=1)
             desc_norm = desc_norm / (np.max(desc_norm) + 1e-8)
             return desc_norm >= min_conf
         
@@ -312,12 +324,54 @@ class PointFilter:
         else:
             mask_top = np.ones(len(kpts), dtype=bool)
         
+        # sanity check: all masks should match keypoint count
+        for name, m in [
+            ("sky", mask_sky),
+            ("lines", mask_lines),
+            ("stats", mask_stats),
+            ("conf", mask_conf),
+            ("shadow", mask_shadow),
+            ("top", mask_top),
+        ]:
+            if m.shape[0] != len(kpts):
+                print(f"[PointFilter] mask '{name}' length {m.shape[0]} vs kpts {len(kpts)}")
+                # adjust by truncating or padding with True
+                if m.shape[0] > len(kpts):
+                    m = m[: len(kpts)]
+                else:
+                    m = np.concatenate([m, np.ones(len(kpts) - m.shape[0], dtype=bool)])
+                if name == "sky":
+                    mask_sky = m
+                elif name == "lines":
+                    mask_lines = m
+                elif name == "stats":
+                    mask_stats = m
+                elif name == "conf":
+                    mask_conf = m
+                elif name == "shadow":
+                    mask_shadow = m
+                elif name == "top":
+                    mask_top = m
+        
         # 모든 필터 합치기 (AND 연산)
         final_mask = mask_sky & mask_lines & mask_stats & mask_conf & mask_shadow & mask_top
         
         # 필터링된 결과 반환
         filtered_kpts = kpts[final_mask]
-        filtered_desc = desc[:, final_mask] if desc is not None else None
+        filtered_desc = None
+        if desc is not None:
+            if desc.ndim == 2:
+                if desc.shape[1] == len(kpts):
+                    # descriptors stored as (dim, N)
+                    filtered_desc = desc[:, final_mask]
+                elif desc.shape[0] == len(kpts):
+                    # descriptors stored as (N, dim)
+                    filtered_desc = desc[final_mask, :]
+                else:
+                    # weird orientation; fall back with masking on second axis
+                    filtered_desc = desc[:, final_mask]
+            else:
+                filtered_desc = desc
         
         return filtered_kpts, filtered_desc
 

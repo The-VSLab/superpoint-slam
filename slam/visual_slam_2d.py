@@ -58,6 +58,7 @@ class VisualSLAM2D:
         top_region_min_grad: float = 34.0,
         top_region_min_std: float = 14.0,
         bottom_region_ratio: float = 0.35,
+        filter_floor: bool = False,
         deterministic: bool = False,
         seed: int = 0,
     ):
@@ -99,6 +100,7 @@ class VisualSLAM2D:
         self.top_region_min_grad = float(top_region_min_grad)
         self.top_region_min_std = float(top_region_min_std)
         self.bottom_region_ratio = float(bottom_region_ratio)
+        self.filter_floor = bool(filter_floor)
         self.deterministic = bool(deterministic)
         self.seed = int(seed)
 
@@ -150,10 +152,21 @@ class VisualSLAM2D:
             pass
 
     def _apply_mask(self, gray: np.ndarray) -> np.ndarray:
-        if not self.mask_car:
-            return gray
-        masked = gray.copy()
-        masked[int(self.height * 0.92) :, :] = 0
+        """Optionally apply car/floor masking to the grayscale frame.
+
+        - mask_car: zeros out lower ~8% of image (car hood)
+        - filter_floor: zeros out the bottom region defined by
+          ``bottom_region_ratio`` to prevent feature extraction there.
+        """
+        masked = gray
+        if self.mask_car:
+            masked = masked.copy()
+            masked[int(self.height * 0.92) :, :] = 0
+        if self.filter_floor and self.bottom_region_ratio > 0:
+            if masked is gray:
+                masked = masked.copy()
+            bottom_y = int(self.height * (1.0 - self.bottom_region_ratio))
+            masked[bottom_y:, :] = 0
         return masked
 
     def _refine_subpixel_com(self, kpts: np.ndarray, heatmap: np.ndarray) -> np.ndarray:
@@ -447,6 +460,19 @@ class VisualSLAM2D:
                         interpolation=cv2.INTER_CUBIC,
                     )
 
+                # remove floor points post-detection as a safety net
+                if self.filter_floor and len(kpts) > 0:
+                    bottom_y = self.height * (1.0 - self.bottom_region_ratio)
+                    valid = kpts[:, 1] < bottom_y
+                    if not np.all(valid):
+                        kpts = kpts[valid]
+                        if desc is not None:
+                            # descriptor shape may be (dim,N) or (N,dim)
+                            if desc.ndim == 2 and desc.shape[1] == len(valid):
+                                desc = desc[:, valid]
+                            elif desc.ndim == 2 and desc.shape[0] == len(valid):
+                                desc = desc[valid, :]
+
                 raw_kpts = kpts.copy()
                 raw_desc = desc.copy() if desc is not None else None
 
@@ -635,16 +661,16 @@ class VisualSLAM2D:
             if self.show_display:
                 vis = frame.copy()
                 bottom_y = int(self.height * (1.0 - self.bottom_region_ratio))
+                # only draw non-floor keypoints (skip points below threshold)
                 for pt in kpts[::3]:
                     x, y = int(pt[0]), int(pt[1])
-                    # Red for ground/bottom region, Blue for objects/structures
-                    color = (0, 0, 255) if y >= bottom_y else (255, 0, 0)
-                    cv2.circle(vis, (x, y), self.kpt_display_radius, color, -1, lineType=cv2.LINE_AA)
+                    if y < bottom_y:
+                        cv2.circle(vis, (x, y), self.kpt_display_radius, (255, 0, 0), -1, lineType=cv2.LINE_AA)
                 # Draw bottom region threshold line for reference
                 cv2.line(vis, (0, bottom_y), (self.width, bottom_y), (100, 100, 100), 1)
                 cv2.putText(vis, f"Frame: {frame_idx}", (12, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                 cv2.putText(vis, f"Matches: {len(matches)} Inliers: {inliers}", (12, 58), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 220, 0), 2)
-                cv2.putText(vis, f"Red=Floor | Blue=Objects", (12, 86), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 1)
+                # no floor/keypoint legend since floor points are hidden
                 cv2.imshow("SuperPoint 2D SLAM", vis)
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
