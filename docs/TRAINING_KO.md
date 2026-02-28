@@ -94,24 +94,41 @@ python scripts/train_superpoint.py \
 
 ---
 
-# 3) 학습 v13 (Teacher-Student 증류)
+# 3) 모델 성능 극대화 (2-Phase Teacher-Student 증류)
 
-## 개요
-- **Teacher:** `learning/original_superpoint.py` (VGG 기반)
-- **Student:** `scripts/py_superpoint.py`의 `SuperPointNetV2` (MobileNetV2)
-- **목적:** Teacher의 코너 분포를 Student가 따라가도록 지도
+SuperPoint VGG 원본의 성능(Teacher)을 경량화된 MobileNetV2(Student)로 안정적으로 이식하기 위한 **2단계(Phase 1 & 2) 증류(Distillation)** 학습 가이드입니다.
 
-## 실행 방법
+## 🌟 개요 (왜 2단계로 나누어 학습하나요?)
+MobileNetV2 백본은 ImageNet으로 사전학습된 고도의 지능(BatchNorm 통계 등)을 가지고 있습니다. 
+만약 처음부터 백본 전체를 열고 학습하면, 무작위 초기화된 머리(Head) 계층이 내뿜는 거대한 초기 오차(Loss)와 파괴적인 그래디언트로 인해 백본의 지능이 완전히 오염되는 **'Catastrophic Forgetting(망각)'** 현상이 발생합니다.
+이를 방지하기 위해 다음 2단계 조치를 취합니다.
+
+---
+
+### 🔹 Phase 1: 뼈대 동결 학습 (Frozen Backbone)
+- **목적:** 백본(MobileNet)의 파라미터를 100% 잠가 보호하고, 머리(Detector & Descriptor Head) 영역만 일차적으로 학습시킵니다.
+- **설정 (`learning/config_v13.yml`):**
+  - `freeze_backbone: true`
+  - `epochs: 20`, `lr: 1.0e-4`
+- **결과물:** 약 52~55% 신뢰도를 방어하는 안정된 기초 가중치가 생성됩니다. (예: `checkpoints/v15_depthwise_resume.pt`)
+
+### 🔹 Phase 2: 정밀 튜닝 및 BatchNorm 방어 (Safe Fine-Tuning)
+- **목적:** 머리의 학습이 안정되었으므로 백본의 잠금을 풀고(Unfreeze) 픽셀 단위로 함께 교정합니다. **단, BN 오염 방지를 위해 BatchNorm 층은 코드 단에서 강제로 평가 모드(`eval()`)로 동결 유지합니다.**
+- **설정 (`learning/config_v13.yml`):**
+  - `freeze_backbone: false` (코드 내부적으로 BN만 자동 동결 처리됨)
+  - `resume: true`, `resume_from: checkpoints/v15_depthwise_resume.pt` (Phase 1 가중치 로드)
+  - `epochs: 30`, `lr: 1.0e-5` (낮은 학습률 사용)
+- **결과물:** 신뢰도가 70% 이상으로 치솟는 초정밀 최적화 모델이 완성됩니다. (`checkpoints/v14_latest.pth`)
+
+---
+
+## 💻 실행 방법
+두 Phase 모두 실행 명령어는 동일하며, `config_v13.yml`의 설정값만 조절하여 진행합니다.
+
 ```bash
-python learning/train_superpoint_v13.py --config learning/config_v13.yml
+uv run python learning/train_superpoint_v13.py --config learning/config_v13.yml
 ```
 
-## config_v13.yml 주요 항목
-- `data_dir`, `output_dir`, `height`, `width`
-- `epochs`, `batch_size`, `lr`, `num_workers`, `fp16`
-- `det_weight`, `desc_weight`, `sup_weight`, `dustbin_weight`
-- `max_rotate`, `max_scale`, `max_perspective`
-
-## 참고
-- Teacher 가중치는 코드 내부에서 `superpoint_v1.pth` (MagicLeap 오리지널 완전체)를 로드합니다.
-- 학습 결과는 `checkpoints/v14_final_epoch_*.pth`로 저장됩니다.
+## 참고 사항
+- Teacher 가중치는 코드 내부에서 `weights/superpoint_v1.pth` (MagicLeap 오리지널 완전체, BatchNorm 미포함 버전)를 로드합니다.
+- 평가(Validation) 지표에서 `Prec`(정밀도)와 `MaxP`(최대 확신도)가 극적으로 상승(>0.8)하는 것을 모니터링하세요.

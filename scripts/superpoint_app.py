@@ -43,9 +43,9 @@ def build_parser():
     parser.add_argument("--weights", type=str, required=True, help="SuperPoint 가중치 경로")
     parser.add_argument("--resize", nargs=2, type=int, default=[640, 480], 
                         help="입력 리사이즈 [width height]")
-    parser.add_argument("--slam_conf_thresh", type=float, default=0.001, 
+    parser.add_argument("--slam_conf_thresh", type=float, default=0.0005, 
                         help="특징점 신뢰도 임계값 (낮을수록 특징점 증가)")
-    parser.add_argument("--slam_nms_dist", type=int, default=4, help="NMS 거리")
+    parser.add_argument("--slam_nms_dist", type=int, default=3, help="NMS 거리")
     parser.add_argument("--nn_thresh", type=float, default=0.7, help="매칭 임계값")
     parser.add_argument("--max_kpts", type=int, default=1500, help="프레임당 최대 특징점 개수(기본: 1500)")
     parser.add_argument("--min_kpts", type=int, default=600, help="프레임당 최소 특징점 개수(기본: 600)")

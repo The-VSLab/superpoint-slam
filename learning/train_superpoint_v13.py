@@ -93,11 +93,12 @@ def evaluate(student, teacher, loader, args, device):
 
     with torch.no_grad():
         pbar = tqdm(loader, desc="val", mininterval=5.0)
+        use_amp = args.fp16 and device.type == "cuda"
         for img in pbar:
             img = img.to(device, non_blocking=True)
             labels, teacher_mask, teacher_desc = get_teacher_labels(teacher, img)
 
-            with torch.amp.autocast('cuda', enabled=args.fp16):
+            with torch.cuda.amp.autocast(enabled=use_amp):
                 semi, desc = student(img)
                 det_loss = F.cross_entropy(semi, labels, weight=args._ce_weight)
                 if teacher_desc is not None:
@@ -153,17 +154,25 @@ def save_training_state(path, student, optimizer, scaler, epoch, global_step, ne
 
 def load_training_state(path, student, optimizer, scaler, device):
     ckpt = torch.load(path, map_location=device, weights_only=False)
-    student.load_state_dict(ckpt["student"], strict=True)
-    if "optimizer" in ckpt:
-        optimizer.load_state_dict(ckpt["optimizer"])
-    if "scaler" in ckpt:
-        scaler.load_state_dict(ckpt["scaler"])
-    epoch = int(ckpt.get("epoch", 0))
-    global_step = int(ckpt.get("global_step", 0))
-    next_debug_step = ckpt.get("next_debug_step", None)
-    if next_debug_step is not None:
-        next_debug_step = int(next_debug_step)
-    return epoch, global_step, next_debug_step
+    if "student" in ckpt:
+        student.load_state_dict(ckpt["student"], strict=True)
+        if "optimizer" in ckpt:
+            try:
+                optimizer.load_state_dict(ckpt["optimizer"])
+            except ValueError as e:
+                print(f"[Training] Optimizer state mismatch: newly unfrozen backbone detected. Starting fresh optimizer.")
+        if "scaler" in ckpt:
+            scaler.load_state_dict(ckpt["scaler"])
+        epoch = int(ckpt.get("epoch", 0))
+        global_step = int(ckpt.get("global_step", 0))
+        next_debug_step = ckpt.get("next_debug_step", None)
+        if next_debug_step is not None:
+            next_debug_step = int(next_debug_step)
+        return epoch, global_step, next_debug_step
+    else:
+        student.load_state_dict(ckpt, strict=True)
+        print(f"[Training] Loaded raw weights from {path}. Starting from epoch 0.")
+        return 0, 0, None
 
 # --- [4] 데이터셋 정의 ---
 
@@ -238,7 +247,34 @@ def train(args):
     teacher.load_state_dict(torch.load(w_path, map_location=device, weights_only=False))
     teacher.eval()
 
-    optimizer = torch.optim.AdamW(student.parameters(), lr=float(args.lr))
+    # [핵심 수렴 안정화 조치]
+    # 학생의 뼈대(MobileNetV2 Backbone)는 이미 ImageNet으로 완성된 지능이므로, 
+    # 머리(Head) 계층 초반 훈련 시에는 완전 동결(Freeze)하고, 2차 파인튜닝 시에는 BatchNorm 통계만 얼려둡니다.
+    freeze_backbone = bool(getattr(args, "freeze_backbone", True))
+    
+    def set_student_train():
+        student.train()
+        if freeze_backbone:
+            for param in student.backbone.parameters():
+                param.requires_grad = False
+        else:
+            for module in student.backbone.modules():
+                if isinstance(module, torch.nn.modules.batchnorm._BatchNorm):
+                    module.eval()
+                    if module.weight is not None: module.weight.requires_grad = False
+                    if module.bias is not None: module.bias.requires_grad = False
+
+    set_student_train()
+    
+    if freeze_backbone:
+        print("[Training] 🛡️ Pre-trained MobileNetV2 Backbone is FROZEN.")
+    else:
+        print("[Training] 🔓 Backbone UNFROZEN. Heads and Backbone will be fine-tuned together (BN frozen).")
+
+    # 학습은 그래디언트가 열려있는(requires_grad=True) 파라미터들만 진행
+    trainable_params = filter(lambda p: p.requires_grad, student.parameters())
+    optimizer = torch.optim.AdamW(trainable_params, lr=float(args.lr))
+    
     use_amp = args.fp16 and device.type == "cuda"
     scaler = torch.cuda.amp.GradScaler(enabled=use_amp) # FP16 가속
 
@@ -296,7 +332,7 @@ def train(args):
     debug_every = int(getattr(args, "debug_every", 100))
     val_interval = max(1, int(getattr(args, "val_interval", 1)))
 
-    student.train()
+    set_student_train()
     start_epoch = 0
     global_step = 0
     next_debug_step = debug_every if debug_every > 0 else None
@@ -359,7 +395,14 @@ def train(args):
                     with torch.no_grad():
                         pred_pts = (top_k_map > 0).float()
                         precision = (pred_pts * teacher_mask).sum() / (pred_pts.sum() + 1e-6)
-                        pbar.set_postfix({"Prec": f"{precision:.2f}", "Pts": f"{int(pred_pts.sum()/args.batch_size)}"})
+                        max_prob = heatmap.max().item()
+                        pbar.set_postfix({
+                            "Loss": f"{loss.item():.3f}",
+                            "Det": f"{det_loss.item():.3f}",
+                            "Prec": f"{precision:.2f}", 
+                            "Pts": f"{int(pred_pts.sum()/args.batch_size)}",
+                            "MaxP": f"{max_prob:.3f}"
+                        })
 
                 if next_save_step is not None and global_step >= next_save_step:
                     save_training_state(
@@ -391,7 +434,7 @@ def train(args):
                     f"[val] loss={val_loss:.4f} det={val_det:.4f} desc={val_desc:.4f} "
                     f"avg_kpts={val_kpts:.1f}"
                 )
-                student.train()
+                set_student_train()
     except KeyboardInterrupt:
         torch.save(student.state_dict(), checkpoint_path)
         save_training_state(

@@ -31,6 +31,9 @@ class SuperPointFrontend(object):
             if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
                 state_dict_to_load = checkpoint["state_dict"]
                 print("[SuperPointFrontend] Loading 'state_dict' from wrapped checkpoint.")
+            elif isinstance(checkpoint, dict) and "student" in checkpoint:
+                state_dict_to_load = checkpoint["student"]
+                print("[SuperPointFrontend] Loading 'student' state_dict from wrapped checkpoint.")
             else:
                 state_dict_to_load = checkpoint
                 print("[SuperPointFrontend] Loading raw checkpoint (not wrapped).")

@@ -51,11 +51,15 @@ class SuperPointNetV2(nn.Module):
         if x.shape[1] == 1:
             x = x.repeat(1, 3, 1, 1)
 
+        # [핵심 버그 수정] ImageNet 정규화 적용 (Pre-trained MobileNetV2 백본을 위해 필수!)
+        # 입력 x는 [0, 1] 범위의 텐서이므로, 백본이 학습했던 분포로 맞춰주어야 특징 추출이 가능합니다.
+        mean = torch.tensor([0.485, 0.456, 0.406], device=x.device).view(1, 3, 1, 1)
+        std = torch.tensor([0.229, 0.224, 0.225], device=x.device).view(1, 3, 1, 1)
+        x = (x - mean) / std
+
         x = self.backbone(x)  # [배치크기, 32, 높이/8, 너비/8]
 
         # 특징점 검출 헤드
-        # convPa 에는 이미 내부적으로 ReLU가 적용되지만 논문 호환성을 맞추기 위해 밖에서도 묶어줄 수 있음
-        # 그러나 nn.Sequential 내부에 이미 ReLU가 적용된 상태이기 때문에 바로 처리.
         cPa = F.relu(self.convPa(x), inplace=True)
         semi = self.convPb(cPa)
 
@@ -63,7 +67,7 @@ class SuperPointNetV2(nn.Module):
         cDa = F.relu(self.convDa(x), inplace=True)
         desc = self.convDb(cDa)
         
-        # 모델 내부 L2 정규화는 frontend에서 보간 후 다시 수행하므로 생략하여 속도 개선
-        # desc = F.normalize(desc, p=2, dim=1, eps=1e-8) 
+        # 모델 내부 L2 정규화 복구 (Cosine Embedding Loss의 안정적인 학습 및 수렴을 위해 필수적임)
+        desc = F.normalize(desc, p=2, dim=1, eps=1e-8) 
 
         return semi, desc

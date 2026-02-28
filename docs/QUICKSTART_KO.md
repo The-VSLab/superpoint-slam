@@ -35,13 +35,13 @@ python scripts/py_superpoint.py --input assets/icl_snippet/ --save_npy
 
 또는 통합 CLI 사용:
 ```bash
-python scripts/superpoint_app.py --mode demo --input assets/icl_snippet/ --weights <WEIGHTS_PATH> --save_npy
+python scripts/superpoint_app.py --mode demo --input assets/icl_snippet/ --weights checkpoints/v14_latest.pth --save_npy
 ```
 
 장치 선택 예시:
 ```bash
-python scripts/superpoint_app.py --mode demo --input assets/icl_snippet/ --weights <WEIGHTS_PATH> --device auto
-python scripts/superpoint_app.py --mode demo --input assets/icl_snippet/ --weights <WEIGHTS_PATH> --device cuda
+python scripts/superpoint_app.py --mode demo --input assets/icl_snippet/ --weights checkpoints/v14_latest.pth --device auto
+python scripts/superpoint_app.py --mode demo --input assets/icl_snippet/ --weights checkpoints/v14_latest.pth --device cuda
 ```
 
 ✅ 결과: `npy_outputs/` 폴더에 파일 생성
@@ -83,7 +83,7 @@ python scripts/matcher_main.py --npy_dir npy_outputs --output_dir matching_resul
 ## 🔁 통합 CLI로 SLAM 실행
 
 ```bash
-python scripts/superpoint_app.py --mode slam --input <VIDEO_PATH> --weights <WEIGHTS_PATH> --resize 640 480
+python scripts/superpoint_app.py --mode slam --input <VIDEO_PATH> --weights checkpoints/v14_latest.pth --resize 640 480
 ```
 
 ✅ 결과: `path_final/final_slam_map.ply` 생성 (3D 포인트 클라우드)
@@ -96,7 +96,7 @@ python scripts/superpoint_app.py --mode slam --input <VIDEO_PATH> --weights <WEI
 python scripts/superpoint_app.py \
   --mode slam \
   --input assets/test2.mp4 \
-  --weights weights/superpoint_v2_mobilenet.pth \
+  --weights checkpoints/v14_latest.pth \
   --resize 640 480 \
   --slam_conf_thresh 0.003 \
   --slam_nms_dist 4

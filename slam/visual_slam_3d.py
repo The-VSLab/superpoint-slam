@@ -123,6 +123,7 @@ class VisualSLAM3D:
         self.prev_frame = None
         self.prev_kpts = None
         self.prev_desc = None
+        self.prev_3d_pts = None # Initialize prev_3d_pts
         self.cur_pose = np.eye(4)
         
         # 데이터 저장소
@@ -155,10 +156,12 @@ class VisualSLAM3D:
         self.map_points_added_list = [] # 각 프레임에서 추가된 3D 맵 포인트 수
 
     def triangulate(self, R, t, p1, p2):
-        P1 = self.K @ np.hstack((np.eye(3), np.zeros((3, 1))))
-        P2 = self.K @ np.hstack((R, t))
+        # R, t map from curr to prev (X_prev = R * X_curr + t)
+        # We want to find X in curr frame!
+        P1 = self.K @ np.hstack((R, t))  # Projection for p1 (prev frame)
+        P2 = self.K @ np.hstack((np.eye(3), np.zeros((3, 1))))  # Projection for p2 (curr frame)
         pts_4d = cv2.triangulatePoints(P1, P2, p1.T, p2.T)
-        pts_3d = pts_4d[:3] / pts_4d[3]
+        pts_3d = pts_4d[:3] / (pts_4d[3] + 1e-8)
         return pts_3d.T
 
     def mask_car(self, img):
@@ -238,11 +241,14 @@ class VisualSLAM3D:
 
             if self.prev_frame is None:
                 self.prev_frame, self.prev_kpts, self.prev_desc = img_gray, kpts, desc
+                self.prev_3d_pts = np.full((len(kpts), 3), np.nan)
                 # 첫 프레임 키프레임 추가
                 self.traj_points.append([0,0,0])
                 self.add_keyframe(frame_idx, kpts, desc)
                 frame_idx += 1
                 continue
+
+            curr_3d_pts = np.full((len(kpts), 3), np.nan)
 
             # Matcher 시간 측정
             match_t0 = time.perf_counter()
@@ -265,11 +271,17 @@ class VisualSLAM3D:
             print(f"frame {frame_idx}: desc_dim={None if desc is None else desc.shape[0]}, kpts={len(kpts)}, matches={match_count}")
 
             if use_flow and len(flow_p1) > 8:
+                p1_idx = np.where(status)[0]
+                p2_idx = np.arange(len(flow_p2))
                 p1 = flow_p1.astype(np.float64)
                 p2 = flow_p2.astype(np.float64)
+                p1_3d = self.prev_3d_pts[p1_idx]
             elif len(matches) > 8:
-                p1 = self.prev_kpts[matches[:, 0], :2].astype(np.float64)
-                p2 = kpts[matches[:, 1], :2].astype(np.float64)
+                p1_idx = matches[:, 0]
+                p2_idx = matches[:, 1]
+                p1 = self.prev_kpts[p1_idx, :2].astype(np.float64)
+                p2 = kpts[p2_idx, :2].astype(np.float64)
+                p1_3d = self.prev_3d_pts[p1_idx]
             else:
                 p1 = None
                 p2 = None
@@ -293,6 +305,22 @@ class VisualSLAM3D:
                     print(f"frame {frame_idx}: matches={match_count}, inliers={inliers}, ratio={inlier_ratio:.3f}, t={t_vec.round(3)}")
 
                     if np.isfinite(t_vec).all():
+                        # === 모노큘러 스케일 전파 (Monocular Scale Propagation) ===
+                        scale_factor = 1.0 # 기본 스케일
+                        valid_3d_mask = ~np.isnan(p1_3d[:, 0])
+                        obj_pts = p1_3d[valid_3d_mask]
+                        img_pts = p2[valid_3d_mask]
+                        
+                        if len(obj_pts) >= 15:
+                            success, rvec, tvec_pnp, inliers_pnp = cv2.solvePnPRansac(
+                                obj_pts.astype(np.float32), img_pts.astype(np.float32), 
+                                self.K, None, flags=cv2.SOLVEPNP_EPNP, reprojectionError=3.0)
+                            if success and inliers_pnp is not None and len(inliers_pnp) > 10:
+                                tvec_len = np.linalg.norm(tvec_pnp[:, 0])
+                                # 너무 극단적인 스케일 점프 방지 (거리에 따라 최대 5배)
+                                if 0.01 < tvec_len < 5.0:
+                                    scale_factor = tvec_len
+                        
                         # --- [안정화 로직: 고속도로 모드 (옵션)] ---
                         if self.highway_mode:
                             # 1. 후진 방지
@@ -307,8 +335,9 @@ class VisualSLAM3D:
                             # 3. 관성 적용 (이전 속도와 혼합)
                             t_vec = t_vec * 0.6 + self.last_t_vec * 0.4
                         
-                        # Monocular SLAM 스케일 모호성 방지를 위해 길이 1로 정규화
+                        # [핵심] 스케일 복구 (단순 정규화를 탈피하고 실제 거리 반영)
                         t_vec = t_vec / (np.linalg.norm(t_vec) + 1e-6)
+                        t_vec = t_vec * scale_factor
                         
                         self.last_t_vec = t_vec
                         
@@ -322,13 +351,17 @@ class VisualSLAM3D:
                         # 맵 생성 (삼각측량)
                         mask = mask.ravel().astype(bool)
                         p1_m, p2_m = p1[mask], p2[mask]
+                        p2_idx_m = p2_idx[mask]
+                        
                         if len(p1_m) > 0:
                             local_pts = self.triangulate(R, t_vec.reshape(3,1), p1_m, p2_m)
                             
                             # 필터링
-                            valid = (local_pts[:, 2] > 1.0) & (local_pts[:, 2] < 200) & \
-                                    (np.abs(local_pts[:, 0]) < 100) & (np.abs(local_pts[:, 1]) < 50)
+                            valid = (local_pts[:, 2] > 0.1) & (local_pts[:, 2] < 200) & \
+                                    (np.abs(local_pts[:, 0]) < 100) & (np.abs(local_pts[:, 1]) < 100)
                             local_pts = local_pts[valid]
+                            valid_indices = p2_idx_m[valid]
+                            curr_3d_pts[valid_indices] = local_pts
                             
                             if len(local_pts) > 0:
                                 world_pts = (self.cur_pose[:3, :3] @ local_pts.T).T + self.cur_pose[:3, 3]
