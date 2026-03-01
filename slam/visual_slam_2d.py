@@ -407,6 +407,7 @@ class VisualSLAM2D:
 
         prev_kpts = None
         prev_desc = None
+        prev_3d_pts = None # Add memory for Triangulation
 
         pose = np.array([0.0, 0.0, 0.0], dtype=np.float64)
         trajectory = [pose[:2].copy()]
@@ -573,75 +574,77 @@ class VisualSLAM2D:
             if len(matches) >= 8:
                 p1 = prev_kpts[matches[:, 0]].astype(np.float64)
                 p2 = kpts[matches[:, 1]].astype(np.float64)
-
-                E, emask = cv2.findEssentialMat(
-                    p2,
-                    p1,
-                    self.K,
-                    method=cv2.RANSAC,
-                    prob=0.999,
-                    threshold=self.ransac_thresh,
-                )
+                p1_3d = prev_3d_pts[matches[:, 0]] if prev_3d_pts is not None else np.full((len(p1), 3), np.nan)
+                
+                curr_3d_pts = np.full((len(kpts), 3), np.nan)
+                curr_3d_pts[matches[:, 1]] = p1_3d # Inherit tracked 3D points
+                
+                valid_step = False
+                
+                # 1. Essential Matrix 먼저 구해서 이상치(Outlier) 강력하게 제거 (방향 R, t 추출)
+                E, emask = cv2.findEssentialMat(p2, p1, self.K, method=cv2.RANSAC, prob=0.999, threshold=self.ransac_thresh)
+                
                 if E is not None:
                     _, R, t, pose_mask = cv2.recoverPose(E, p2, p1, self.K)
                     inliers = int(np.count_nonzero(pose_mask)) if pose_mask is not None else 0
                     inlier_ratio = inliers / max(len(matches), 1)
 
-                    t = t[:, 0]
-                    if np.isfinite(t).all():
+                    t_vec = t[:, 0]
+                    if np.isfinite(t_vec).all() and inliers > 10:
+                        
+                        # 2. 스케일 적용 (Essential Matrix의 방향 벡터 적용)
                         yaw = float(np.arctan2(R[1, 0], R[0, 0]))
-                        delta_local = np.array([t[0], t[2]], dtype=np.float64)
+                        delta_local = np.array([t_vec[0], t_vec[2]], dtype=np.float64)
                         norm = np.linalg.norm(delta_local)
+                        
                         if norm > 1e-6:
+                            # 2D 맵 생성을 위해 단위를 고정(motion_scale)하여 경로 형태를 일관되게 그립니다.
                             delta_local = (delta_local / norm) * self.motion_scale
+
                         pose = compose_pose2d(pose, delta_local, yaw)
                         trajectory.append(pose[:2].copy())
-
-                        # === 특징점을 맵에 추가 (깊이 추정 기반) ===
-                        # Y 좌표 기반 깊이 추정: 하단(가까움) ~ 상단(멀리)
-                        # 예: 화면 하단 20% → 2m, 중앙 → 10m, 상단 30% → 30m
-                        y_normalized = (self.cy - p2[:, 1]) / (self.cy + 1e-6)  # -1 (하단) ~ +1 (상단)
-                        y_normalized = np.clip(y_normalized, -1.0, 1.0)
                         
-                        # 깊이 매핑: 하단(2m) ~ 상단(30m)  
-                        depth_min = 2.0
-                        depth_max = 30.0
+                        # 삼각측량 (2D 렌더용 야매 깊이 생성용)
+                        if pose_mask is not None:
+                            mask_bool = pose_mask.ravel().astype(bool)
+                            p1_m, p2_m = p1[mask_bool], p2[mask_bool]
+                            if len(p1_m) > 0:
+                                P1 = self.K @ np.hstack((np.eye(3), np.zeros((3, 1))))
+                                P2 = self.K @ np.hstack((R, t_vec.reshape(3,1))) 
+                                pts_4d = cv2.triangulatePoints(P1, P2, p1_m.T, p2_m.T)
+                                pts_3d = (pts_4d[:3] / (pts_4d[3] + 1e-8)).T
+                                valid_depth = pts_3d[:, 2] > 0.1
+                                valid_indices = np.where(mask_bool)[0][valid_depth]
+                                curr_3d_pts[matches[valid_indices, 1]] = pts_3d[valid_depth]
+                        
+                        valid_step = True
+
+                        # === 2D 맵 출력용 기존 코드 유지 (맵 포인트 렌더링용 깊이 야매 추정) ===
+                        y_normalized = (self.cy - p2[:, 1]) / (self.cy + 1e-6)
+                        y_normalized = np.clip(y_normalized, -1.0, 1.0)
+                        depth_min, depth_max = 2.0, 30.0
                         depth = depth_min + (depth_max - depth_min) * (y_normalized + 1.0) / 2.0
                         
-                        # X 방향 오프셋 (수평 위치 기반)
                         x_offset = (p2[:, 0] - self.cx) / (self.focal + 1e-6)
+                        local = np.stack([x_offset * depth, depth], axis=1)
                         
-                        # 로컬 좌표계 (X: 좌우, Y: 전방 깊이)
-                        local_x = x_offset * depth
-                        local_y = depth
-                        local = np.stack([local_x, local_y], axis=1)
-                        
-                        # 월드 좌표 변환 (회전 + 이동)
-                        c = np.cos(pose[2])
-                        s = np.sin(pose[2])
+                        c, s = np.cos(pose[2]), np.sin(pose[2])
                         rot = np.array([[c, -s], [s, c]], dtype=np.float64)
                         world = (rot @ local.T).T + pose[:2]
                         
-                        # inlier + 최소 시차 필터링 + 바닥/사물 구분
                         bottom_y = int(self.height * (1.0 - self.bottom_region_ratio))
-                        if pose_mask is not None:
-                            inlier_mask = pose_mask.flatten() > 0
-                            parallax = np.linalg.norm((p2 - p1), axis=1)
-                            valid = inlier_mask & (parallax >= self.min_parallax_px)
-                            inlier_pts = world[valid]
-                            is_floor_array = p2[valid, 1] >= bottom_y  # p2의 y >= bottom_y면 바닥
-                            if len(inlier_pts) > 0:
-                                map_points.append((inlier_pts, True, is_floor_array))
-                        else:
-                            parallax = np.linalg.norm((p2 - p1), axis=1)
-                            valid = parallax >= self.min_parallax_px
-                            inlier_pts = world[valid]
-                            is_floor_array = p2[valid, 1] >= bottom_y  # p2의 y >= bottom_y면 바닥
-                            if len(inlier_pts) > 0:
-                                map_points.append((inlier_pts, True, is_floor_array))
-                else:
+                        inlier_mask = pose_mask.flatten() > 0
+                        parallax = np.linalg.norm((p2 - p1), axis=1)
+                        valid = inlier_mask & (parallax >= self.min_parallax_px)
+                        inlier_pts = world[valid]
+                        is_floor_array = p2[valid, 1] >= bottom_y 
+                        if len(inlier_pts) > 0:
+                            map_points.append((inlier_pts, True, is_floor_array))
+
+                if not valid_step:
                     trajectory.append(pose[:2].copy())
             else:
+                curr_3d_pts = np.full((len(kpts), 3), np.nan)
                 trajectory.append(pose[:2].copy())
 
             t1 = time.perf_counter()
@@ -684,6 +687,8 @@ class VisualSLAM2D:
             if run_infer:
                 prev_kpts = kpts
                 prev_desc = desc
+                
+            prev_3d_pts = curr_3d_pts # Update Map Memory
             frame_idx += 1
 
         cap.release()

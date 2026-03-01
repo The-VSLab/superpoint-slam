@@ -11,6 +11,7 @@ import sys
 from frontend.superpoint_frontend import SuperPointFrontend
 from matcher_module import BTMatcher
 from slam.loop_closure import LoopClosureManager
+from tracking.point_filter import PointFilter
 
 # --- 환경별 장치 자동 설정 함수 추가 ---
 def get_optimal_device():
@@ -66,6 +67,7 @@ class VisualSLAM3D:
         sp_interval=1,
         sp_fp16=False,
         highway_mode=False,
+        output_dir="path_final",
     ):
         # 1. 장치 결정
         self.highway_mode = highway_mode
@@ -126,17 +128,22 @@ class VisualSLAM3D:
         self.prev_3d_pts = None # Initialize prev_3d_pts
         self.cur_pose = np.eye(4)
         
+        # 포인트 필터 (하늘/구름 제거)
+        self.point_filter = PointFilter(frame_h=self.H, frame_w=self.W)
+
         # 데이터 저장소
         self.all_map_points = []
         self.all_map_colors = []
         self.keyframes = [] # keyframe poses for visualization
         self.keyframe_indices = []
+        self.keyframe_local_pts = []  # 키프레임별 로컬 3D 포인트 (재투영용)
+        self.keyframe_original_poses = []  # 최적화 전 원본 포즈
         self.traj_points = []
         self.last_t_vec = np.array([0.0, 0.0, 1.0]) 
         self.pose_graph = o3d.pipelines.registration.PoseGraph()
         self.jetson_scale = jetson_scale
 
-        self.save_dir = "path_final"
+        self.save_dir = str(output_dir)
         if not os.path.exists(self.save_dir): os.makedirs(self.save_dir)
 
         # 실시간 2D 확인창
@@ -213,6 +220,12 @@ class VisualSLAM3D:
                 kpts = pts[:2, :].T if pts.shape[1] > 0 else np.empty((0, 2))
                 if self.sp_scale != 1.0 and len(kpts) > 0:
                     kpts = kpts / self.sp_scale
+
+                # 하늘/구름 필터 적용 (무한대 깊이 노이즈 제거)
+                if len(kpts) > 0:
+                    sky_mask = self.point_filter.filter_sky_points(img_curr, kpts)
+                    kpts = kpts[sky_mask]
+                    desc = desc[:, sky_mask] if desc is not None else None
             else:
                 sp_t0 = time.perf_counter()
                 sp_t1 = sp_t0
@@ -248,7 +261,8 @@ class VisualSLAM3D:
                 frame_idx += 1
                 continue
 
-            curr_3d_pts = np.full((len(kpts), 3), np.nan)
+            max_pts = max(len(kpts), len(self.prev_kpts) if self.prev_kpts is not None else 0)
+            curr_3d_pts = np.full((max_pts, 3), np.nan)
 
             # Matcher 시간 측정
             match_t0 = time.perf_counter()
@@ -276,110 +290,134 @@ class VisualSLAM3D:
                 p1 = flow_p1.astype(np.float64)
                 p2 = flow_p2.astype(np.float64)
                 p1_3d = self.prev_3d_pts[p1_idx]
+                # Inherit 3D points
+                curr_3d_pts[p2_idx] = p1_3d
             elif len(matches) > 8:
                 p1_idx = matches[:, 0]
                 p2_idx = matches[:, 1]
                 p1 = self.prev_kpts[p1_idx, :2].astype(np.float64)
                 p2 = kpts[p2_idx, :2].astype(np.float64)
                 p1_3d = self.prev_3d_pts[p1_idx]
+                # Inherit 3D points
+                curr_3d_pts[p2_idx] = p1_3d
             else:
                 p1 = None
                 p2 = None
 
             if p1 is not None and p2 is not None:
-                
-                # RANSAC (엄격하게)
-                E, mask = cv2.findEssentialMat(p2, p1, self.K, method=cv2.RANSAC, prob=0.999, threshold=0.5)
-                
                 valid_step = False
-                if E is not None:
-                    _, R, t, mask = cv2.recoverPose(E, p2, p1, self.K)
-                    inliers = np.count_nonzero(mask) if mask is not None else 0
-                    inlier_ratio = inliers / max(match_count, 1)
-                    t_vec = t[:, 0]
-
-                    # 디버깅: SLAM 추적 상태 모니터링
-                    # - matches: 초기 특징점 매칭 쌍의 총 개수
-                    # - inliers: RANSAC으로 선별된 기하학적으로 유효한 매칭의 수 (0이 아닌 mask 요소 개수)
-                    # - t: 현재 프레임의 상대적 이동 벡터 [x,y,z], 소수점 3자리까지 표시하여 가독성 향상
-                    print(f"frame {frame_idx}: matches={match_count}, inliers={inliers}, ratio={inlier_ratio:.3f}, t={t_vec.round(3)}")
-
-                    if np.isfinite(t_vec).all():
-                        # === 모노큘러 스케일 전파 (Monocular Scale Propagation) ===
-                        scale_factor = 1.0 # 기본 스케일
-                        valid_3d_mask = ~np.isnan(p1_3d[:, 0])
-                        obj_pts = p1_3d[valid_3d_mask]
-                        img_pts = p2[valid_3d_mask]
+                
+                # 1. PnP 시도 (충분한 3D 점이 있을 때)
+                valid_3d_mask = ~np.isnan(p1_3d[:, 0])
+                obj_pts = p1_3d[valid_3d_mask].astype(np.float32)
+                img_pts = p2[valid_3d_mask].astype(np.float32)
+                
+                pnp_success = False
+                if len(obj_pts) >= 15:
+                    success, rvec, tvec_pnp, inliers_pnp = cv2.solvePnPRansac(
+                        obj_pts, img_pts, self.K, None, 
+                        flags=cv2.SOLVEPNP_EPNP, reprojectionError=3.0
+                    )
+                    
+                    if success and inliers_pnp is not None and len(inliers_pnp) > 10:
+                        R_pnp, _ = cv2.Rodrigues(rvec)
+                        t_pnp = tvec_pnp
                         
-                        if len(obj_pts) >= 15:
-                            success, rvec, tvec_pnp, inliers_pnp = cv2.solvePnPRansac(
-                                obj_pts.astype(np.float32), img_pts.astype(np.float32), 
-                                self.K, None, flags=cv2.SOLVEPNP_EPNP, reprojectionError=3.0)
-                            if success and inliers_pnp is not None and len(inliers_pnp) > 10:
-                                tvec_len = np.linalg.norm(tvec_pnp[:, 0])
-                                # 너무 극단적인 스케일 점프 방지 (거리에 따라 최대 5배)
-                                if 0.01 < tvec_len < 5.0:
-                                    scale_factor = tvec_len
+                        # 카메라가 바라보는 방향 기준으로의 PnP 반환(World to Camera). 역변환 필요.
+                        # R_cam = R_pnp.T, t_cam = -R_pnp.T * t_pnp
+                        R_rel = R_pnp
+                        t_rel = t_pnp
                         
-                        # --- [안정화 로직: 고속도로 모드 (옵션)] ---
-                        if self.highway_mode:
-                            # 1. 후진 방지
-                            if t_vec[2] < 0: t_vec = -t_vec; R = R.T
+                        tvec_len = np.linalg.norm(t_rel[:, 0])
+                        # 필터: 너무 기형적인 점프 방지 
+                        if 0.001 < tvec_len < 10.0:
+                            pnp_success = True
+                            R = R_rel
+                            t_vec = t_rel[:, 0]
+                            inliers = len(inliers_pnp)
+                            inlier_ratio = inliers / max(match_count, 1)
                             
-                            # 2. 횡이동 억제 (Turn이 작으면 X 이동 억제)
-                            turn_amount = np.abs(np.arctan2(R[0,2], R[2,2]))
-                            damp_x = np.clip(turn_amount * 10.0, 0.1, 1.0)
-                            t_vec[0] *= damp_x 
-                            t_vec[1] *= 0.05 # Y(상하) 억제
+                            # Update mask based on PnP inliers for Triangulation
+                            mask = np.zeros(len(p1), dtype=np.uint8)
+                            pnp_inlier_indices = np.where(valid_3d_mask)[0][inliers_pnp.flatten()]
+                            mask[pnp_inlier_indices] = 1
                             
-                            # 3. 관성 적용 (이전 속도와 혼합)
-                            t_vec = t_vec * 0.6 + self.last_t_vec * 0.4
-                        
-                        # [핵심] 스케일 복구 (단순 정규화를 탈피하고 실제 거리 반영)
+                            print(f"frame {frame_idx}: [PnP] matches={match_count}, inliers={inliers}, ratio={inlier_ratio:.3f}, scale={tvec_len:.4f}, t={t_vec.round(3)}")
+
+                # 2. PnP 실패 시 Essential Matrix (스케일 정보 상실/1.0 할당)
+                if not pnp_success:
+                    E, mask = cv2.findEssentialMat(p2, p1, self.K, method=cv2.RANSAC, prob=0.999, threshold=0.5)
+                    if E is not None:
+                        _, R, t, mask = cv2.recoverPose(E, p2, p1, self.K, mask=mask)
+                        inliers = np.count_nonzero(mask) if mask is not None else 0
+                        inlier_ratio = inliers / max(match_count, 1)
+                        t_vec = t[:, 0]
+                        # 방향만 보존하고 기본 1.0스케일 부여
                         t_vec = t_vec / (np.linalg.norm(t_vec) + 1e-6)
-                        t_vec = t_vec * scale_factor
                         
-                        self.last_t_vec = t_vec
+                        print(f"frame {frame_idx}: [Ess] matches={match_count}, inliers={inliers}, ratio={inlier_ratio:.3f}, t={t_vec.round(3)}")
                         
-                        # Pose Update
-                        T_rel = np.eye(4)
-                        T_rel[:3, :3] = R
-                        T_rel[:3, 3] = t_vec
-                        self.cur_pose = self.cur_pose @ T_rel
-                        valid_step = True
-                        
-                        # 맵 생성 (삼각측량)
-                        mask = mask.ravel().astype(bool)
-                        p1_m, p2_m = p1[mask], p2[mask]
-                        p2_idx_m = p2_idx[mask]
-                        
-                        if len(p1_m) > 0:
-                            local_pts = self.triangulate(R, t_vec.reshape(3,1), p1_m, p2_m)
-                            
-                            # 필터링
-                            valid = (local_pts[:, 2] > 0.1) & (local_pts[:, 2] < 200) & \
-                                    (np.abs(local_pts[:, 0]) < 100) & (np.abs(local_pts[:, 1]) < 100)
-                            local_pts = local_pts[valid]
-                            valid_indices = p2_idx_m[valid]
-                            curr_3d_pts[valid_indices] = local_pts
-                            
-                            if len(local_pts) > 0:
-                                world_pts = (self.cur_pose[:3, :3] @ local_pts.T).T + self.cur_pose[:3, 3]
-                                
-                                # [청소] 바닥 아래 지하 노이즈 제거
-                                # OpenCV 좌표계: +Y가 아래. 바닥은 약 +1.6 ~ 1.7
-                                # 1.8보다 큰 값(더 아래)은 노이즈
-                                valid_ground = world_pts[:, 1] < 1.8
-                                world_pts = world_pts[valid_ground]
-                                # map_points_added 기록
-                                map_points_added = int(world_pts.shape[0])
+                        if np.isfinite(t_vec).all() and inliers > 10:
+                            pnp_success = True # 논리 구조상 성공으로 간주
+                
+                # 3. 최적 포즈 적용 및 지도 업데이트
+                if pnp_success:
+                    # --- [안정화 로직: 고속도로 모드 (옵션)] ---
+                    if self.highway_mode:
+                        # 1. 후진 방지
+                        if t_vec[2] < 0: t_vec = -t_vec; R = R.T
+                        # 2. 횡이동 억제 (Turn이 작으면 X 이동 억제)
+                        turn_amount = np.abs(np.arctan2(R[0,2], R[2,2]))
+                        damp_x = np.clip(turn_amount * 10.0, 0.1, 1.0)
+                        t_vec[0] *= damp_x 
+                        t_vec[1] *= 0.05 # Y(상하) 억제
+                        # 3. 관성 적용 (이전 속도와 혼합)
+                        t_vec = t_vec * 0.6 + self.last_t_vec * 0.4
 
-                                # 색상 계산
-                                cols = get_height_color(world_pts[:, 1])
-                                
-                                # 저장
-                                self.all_map_points.append(world_pts)
-                                self.all_map_colors.append(cols)
+                    self.last_t_vec = t_vec
+                    
+                    # Pose Update (Relative to absolute)
+                    T_rel = np.eye(4)
+                    T_rel[:3, :3] = R
+                    T_rel[:3, 3] = t_vec
+                    self.cur_pose = self.cur_pose @ T_rel
+                    valid_step = True
+                    
+                    # 맵 생성 (삼각측량: 현재 R, t_vec 기반으로 수행)
+                    mask = mask.ravel().astype(bool)
+                    p1_m, p2_m = p1[mask], p2[mask]
+                    p2_idx_m = p2_idx[mask]
+                    
+                    if len(p1_m) > 0:
+                        local_pts = self.triangulate(R, t_vec.reshape(3,1), p1_m, p2_m)
+                        
+                        # 필터링 (너무 멀거나 비상식적인 점 제거, 단 루프클로저를 위해 넉넉히 허용)
+                        valid = (local_pts[:, 2] > 0.1) & (local_pts[:, 2] < 500) & \
+                                (np.abs(local_pts[:, 0]) < 500) & (np.abs(local_pts[:, 1]) < 500)
+                        local_pts = local_pts[valid]
+                        valid_indices = p2_idx_m[valid]
+                        
+                        # 삼각측량 된 점을 현재 3D 점 메모리에 등록 (Scale Propagation의 핵심)
+                        curr_3d_pts[valid_indices] = local_pts
+                        
+                        if len(local_pts) > 0:
+                            # 로컬 3D 포인트를 현재 키프레임에 등록 (재투영용)
+                            if len(self.keyframe_local_pts) > 0:
+                                self.keyframe_local_pts[-1].append(local_pts.copy())
+
+                            # 월드 좌표계 투영 (실시간 시각화용, 최적화 후 재구축됨)
+                            world_pts = (self.cur_pose[:3, :3] @ local_pts.T).T + self.cur_pose[:3, 3]
+                            
+                            # [청소] 바닥 아래 지하 노이즈 제거
+                            valid_ground = world_pts[:, 1] < 1.8
+                            world_pts = world_pts[valid_ground]
+                            map_points_added = int(world_pts.shape[0])
+
+                            cols = get_height_color(world_pts[:, 1])
+                            
+                            # 저장
+                            self.all_map_points.append(world_pts)
+                            self.all_map_colors.append(cols)
 
                 # 실패 시 관성 주행
                 if not valid_step:
@@ -393,7 +431,7 @@ class VisualSLAM3D:
             
             # 키프레임 저장 (영상처럼 드문드문 파란 카메라 표시)
             if frame_idx % keyframe_interval == 0:
-                self.add_keyframe(frame_idx, kpts, desc)
+                self.add_keyframe(frame_idx, kpts, desc, curr_3d_pts)
 
             # 2D 뷰 표시
             img_vis = cv2.cvtColor(img_curr, cv2.COLOR_BGR2GRAY)
@@ -431,6 +469,7 @@ class VisualSLAM3D:
                 if flow_p2 is not None and len(flow_p2) > 0:
                     self.prev_kpts = flow_p2
             self.prev_frame = img_gray
+            self.prev_3d_pts = curr_3d_pts
             frame_idx += 1
 
         print("\n==> Video Finished. Building Final Scene...")
@@ -439,9 +478,11 @@ class VisualSLAM3D:
         self.print_perf_summary()
         self.visualize_final_result()
 
-    def add_keyframe(self, frame_idx, kpts, desc):
+    def add_keyframe(self, frame_idx, kpts, desc, pts_3d=None):
         self.keyframes.append(self.cur_pose.copy())
         self.keyframe_indices.append(frame_idx)
+        self.keyframe_local_pts.append([])  # 이 키프레임에 등록될 로컬 3D 포인트들
+        self.keyframe_original_poses.append(self.cur_pose.copy())
 
         node_idx = len(self.pose_graph.nodes)
         self.pose_graph.nodes.append(
@@ -462,15 +503,26 @@ class VisualSLAM3D:
                 )
             )
 
-        self.loop_closure.add_keyframe(frame_idx, kpts, desc)
+        self.loop_closure.add_keyframe(frame_idx, kpts, desc, pts_3d)
         loop = self.loop_closure.find_loop(frame_idx, kpts, desc)
         if loop is not None:
-            information = np.eye(6)
+            # Open3D 최적화기가 발산(diverge)하지 않도록 Loop Transform의 스케일을 단방향 오도메트리와 동일하게 1.0으로 정규화
+            normalized_transform = loop.transform.copy()
+            t = normalized_transform[:3, 3]
+            scale = np.linalg.norm(t)
+            
+            if scale > 0:
+                normalized_transform[:3, 3] = t / scale
+            
+            print(f"  [Pose Graph] Normalizing PnP Edge Scale: {scale:.3f} -> 1.000")
+            
+            # Loop 클로저 엣지는 신뢰도를 낮게 설정 (Information Matrix 작게)
+            information = np.eye(6) * 0.1 
             self.pose_graph.edges.append(
                 o3d.pipelines.registration.PoseGraphEdge(
                     loop.match_index,
                     node_idx,
-                    loop.transform,
+                    normalized_transform,
                     information,
                     uncertain=True,
                 )
@@ -515,13 +567,41 @@ class VisualSLAM3D:
             print(f"==> Jetson Nano est. FPS: {jetson_fps:.2f} (scale={self.jetson_scale})")
 
     def visualize_final_result(self):
-        # 1. 포인트 클라우드 병합
-        if not self.all_map_points:
-            print("No points generated.")
-            return
+        # 1. 최적화된 Pose Graph로 포인트 클라우드 재구축
+        rebuilt_points = []
+        rebuilt_colors = []
+        
+        n_kf = min(len(self.keyframes), len(self.keyframe_local_pts))
+        for i in range(n_kf):
+            optimized_pose = self.keyframes[i]  # Pose Graph 최적화 후 갱신된 포즈
+            local_chunks = self.keyframe_local_pts[i]
             
-        points = np.vstack(self.all_map_points)
-        colors = np.vstack(self.all_map_colors)
+            for local_pts in local_chunks:
+                if len(local_pts) == 0:
+                    continue
+                # 최적화된 포즈로 월드 좌표계 재투영
+                world_pts = (optimized_pose[:3, :3] @ local_pts.T).T + optimized_pose[:3, 3]
+                
+                # 노이즈 제거
+                valid_ground = world_pts[:, 1] < 1.8
+                world_pts = world_pts[valid_ground]
+                
+                if len(world_pts) > 0:
+                    cols = get_height_color(world_pts[:, 1])
+                    rebuilt_points.append(world_pts)
+                    rebuilt_colors.append(cols)
+        
+        if not rebuilt_points:
+            # Fallback: 재투영 데이터가 없으면 원본 사용
+            if not self.all_map_points:
+                print("No points generated.")
+                return
+            points = np.vstack(self.all_map_points)
+            colors = np.vstack(self.all_map_colors)
+        else:
+            points = np.vstack(rebuilt_points)
+            colors = np.vstack(rebuilt_colors)
+            print(f" -> Re-projected {len(points)} points using {n_kf} optimized keyframes.")
         
         # 2. 포인트 클라우드 객체 생성
         pcd = o3d.geometry.PointCloud()
@@ -532,8 +612,11 @@ class VisualSLAM3D:
         # 너무 촘촘하면 보기 싫고, 너무 듬성하면 휑함. 적당히 0.1m 간격으로 정리
         pcd = pcd.voxel_down_sample(voxel_size=0.1)
 
-        # 3. 경로선 (Trajectory Line)
-        traj_pts = np.array(self.traj_points)
+        # 3. 경로선 (Trajectory Line) - 최적화된 Keyframe들을 연결
+        traj_pts = np.array([pose[:3, 3] for pose in self.keyframes])
+        if len(traj_pts) < 2:
+            return
+
         lines = [[i, i+1] for i in range(len(traj_pts)-1)]
         traj_line = o3d.geometry.LineSet()
         traj_line.points = o3d.utility.Vector3dVector(traj_pts)
@@ -570,12 +653,31 @@ class VisualSLAM3D:
         ctr.set_up([0, -1, 0])
         ctr.set_zoom(0.5)
 
-        vis.run()
-        vis.destroy_window()
-        
         # 저장
         o3d.io.write_point_cloud(os.path.join(self.save_dir, "final_slam_map.ply"), pcd)
-        print(" -> Map saved.")
+        print(" -> Point Cloud saved to:", os.path.join(self.save_dir, "final_slam_map.ply"))
+
+        # 2D 평면 지도(Top-Down Map) 생성 및 저장
+        try:
+            from .slam2d_common import render_topdown_map
+            traj_2d = traj_pts[:, [0, 2]]  # 3D (X,Y,Z) -> 2D (X,Z) Top-Down
+            
+            # 3D 맵 포인트를 2D 평면 지도용으로 X, Z축만 추출
+            map_3d = np.asarray(pcd.points)
+            if len(map_3d) > 0:
+                map_2d = map_3d[:, [0, 2]]
+            else:
+                map_2d = np.empty((0, 2))
+                
+            map_img = render_topdown_map(traj_2d, map_2d)
+            cv2.imwrite(os.path.join(self.save_dir, "topdown_map.png"), map_img)
+            np.savetxt(os.path.join(self.save_dir, "trajectory_xy.txt"), traj_2d, fmt="%.4f")
+            print(" -> Topdown Map saved to:", os.path.join(self.save_dir, "topdown_map.png"))
+        except Exception as e:
+            print(f" -> Could not save Top-down map: {e}")
+
+        vis.run()
+        vis.destroy_window()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()

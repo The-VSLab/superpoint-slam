@@ -204,10 +204,13 @@ def run_orb_slam(opt):
 
 def run_3d_slam(opt):
     """SuperPoint 3D SLAM 실행 (포인트 클라우드 시각화)"""
+    out_dir = get_next_subdir(opt.output_dir, "superpoint_3d")
+    
     print(f"\n{'='*80}")
     print(f"🎬 SuperPoint 3D SLAM 시작")
     print(f"{'='*80}")
     print(f"📁 입력: {opt.input}")
+    print(f"📁 출력: {out_dir}")
     print(f"{'='*80}\n")
     
     slam = VisualSLAM3D(
@@ -217,14 +220,16 @@ def run_3d_slam(opt):
         sp_scale=1.0,
         sp_interval=1,
         sp_fp16=False,
+        output_dir=str(out_dir)
     )
     
     slam.process()
     
     print(f"\n{'='*80}")
-    print(f"✅ 3D 포인트 클라우드가 생성 및 표시되었습니다!")
+    print(f"✅ 3D 포인트 클라우드 및 2D 비교 맵이 생성되었습니다!")
     print(f"{'='*80}")
-    print(f"💾 저장위치: path_final/final_slam_map.ply")
+    print(f"💾 포인트 클라우드: {out_dir}/final_slam_map.ply")
+    print(f"💾 Top-Down 맵: {out_dir}/topdown_map.png")
     print(f"{'='*80}\n")
 
 
