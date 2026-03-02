@@ -64,6 +64,10 @@ class SuperPointFrontend(object):
             print("   -> Using NVIDIA GPU (CUDA)")
             # 고정 해상도 입력에서는 커널 튜닝으로 약간의 속도 향상 가능
             torch.backends.cudnn.benchmark = True
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            if hasattr(torch, "set_float32_matmul_precision"):
+                torch.set_float32_matmul_precision("high")
         elif torch.backends.mps.is_available():
             self.device = torch.device("mps")
             print("   -> Using Apple Silicon GPU (MPS)")
@@ -72,6 +76,8 @@ class SuperPointFrontend(object):
             print("   -> Using CPU")
 
         self.net = self.net.to(self.device)
+        if self.device.type == "cuda":
+            self.net = self.net.to(memory_format=torch.channels_last)
         self.net.eval()
 
     def nms_fast(self, in_corners, H, W, dist_thresh):
@@ -139,7 +145,7 @@ class SuperPointFrontend(object):
         out_inds = inds1[inds_keep[inds2]]
         return out, out_inds
 
-    def run(self, img):
+    def run(self, img, return_desc_tensor=False, use_fp16=False):
         """numpy 이미지를 처리하여 특징점과 디스크립터를 추출합니다.
         입력
           img - [0,1] 범위의 HxW numpy float32 입력 이미지
@@ -160,9 +166,17 @@ class SuperPointFrontend(object):
         inp = torch.from_numpy(inp).view(1, 1, H, W)
         # 모델 파라미터와 동일 디바이스로 이동 (CUDA/MPS/CPU 모두 안전)
         inp = inp.to(self.device)
+        if self.device.type == "cuda":
+            inp = inp.contiguous(memory_format=torch.channels_last)
         # 네트워크 순전파
         with torch.inference_mode():
-            semi, coarse_desc = self.net(inp)
+            if self.device.type == "cuda" and use_fp16:
+                with torch.autocast(device_type="cuda", dtype=torch.float16):
+                    semi, coarse_desc = self.net(inp)
+                semi = semi.float()
+                coarse_desc = coarse_desc.float()
+            else:
+                semi, coarse_desc = self.net(inp)
         # --- 특징점 처리 (GPU에서 softmax 후 CPU로 이동)
         dense = F.softmax(semi, dim=1)[0, :-1, :, :]  # dustbin 제거
         nodust = dense.detach().cpu().numpy()
@@ -194,7 +208,10 @@ class SuperPointFrontend(object):
         # --- 디스크립터 처리
         D = coarse_desc.shape[1]
         if pts.shape[1] == 0:
-            desc = np.zeros((D, 0))
+            if return_desc_tensor:
+                desc = torch.empty((D, 0), device=self.device, dtype=torch.float32)
+            else:
+                desc = np.zeros((D, 0), dtype=np.float32)
         else:
             # 2D 점 위치를 사용하여 디스크립터 맵에 보간
             # align_corners=True일 때 올바른 매핑 식: (coord / (size - 1)) * 2 - 1
@@ -209,8 +226,14 @@ class SuperPointFrontend(object):
             # coarse_desc가 올바른 디바이스에 있는지 확인 (안전성 체크)
             if coarse_desc.device != self.device:
                 coarse_desc = coarse_desc.to(self.device)
+            coarse_desc = coarse_desc.float()
 
-            desc = F.grid_sample(coarse_desc, samp_pts, align_corners=True)
-            desc = desc.detach().cpu().numpy().reshape(D, -1)
-            desc /= np.linalg.norm(desc, axis=0, keepdims=True)
+            desc_t = F.grid_sample(coarse_desc, samp_pts, align_corners=True)
+            desc_t = desc_t.reshape(D, -1)
+            desc_t = F.normalize(desc_t.float(), p=2, dim=0, eps=1e-8)
+
+            if return_desc_tensor:
+                desc = desc_t.detach()
+            else:
+                desc = desc_t.detach().cpu().numpy()
         return pts, desc, heatmap

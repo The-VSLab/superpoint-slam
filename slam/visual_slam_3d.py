@@ -86,11 +86,12 @@ class VisualSLAM3D:
         
         self.sp_scale = float(sp_scale)
         self.sp_interval = max(int(sp_interval), 1)
+        self.sp_fp16 = bool(sp_fp16)
         if not (0.1 <= self.sp_scale <= 1.0):
             raise ValueError("sp_scale must be in [0.1, 1.0]")
 
         print(f"==> Resolution: {self.W}x{self.H}")
-        print(f"==> SuperPoint config: fp16={sp_fp16}, sp_scale={self.sp_scale}, sp_interval={self.sp_interval}")
+        print(f"==> SuperPoint config: fp16={self.sp_fp16}, sp_scale={self.sp_scale}, sp_interval={self.sp_interval}")
 
         # 카메라 파라미터 (일반적인 블랙박스 화각)
         self.focal = max(self.W, self.H) * 0.8
@@ -116,10 +117,11 @@ class VisualSLAM3D:
         self.loop_closure = LoopClosureManager(
             matcher=self.matcher,
             K=self.K,
-            min_frame_gap=30,
-            top_k=5,
+            min_frame_gap=10,
+            top_k=3,
             min_inliers=30,
             min_inlier_ratio=0.25,
+            verbose=False,
         )
 
         self.prev_frame = None
@@ -215,7 +217,11 @@ class VisualSLAM3D:
                 # Superpoint 추론 시간 측정
                 # perf_counter가 time보다 짧은 구간 측정에서 더 정확
                 sp_t0 = time.perf_counter()
-                pts, desc, _ = self.fe.run(img_fe)
+                pts, desc, _ = self.fe.run(
+                    img_fe,
+                    return_desc_tensor=self.use_cuda,
+                    use_fp16=self.sp_fp16,
+                )
                 sp_t1 = time.perf_counter()
                 kpts = pts[:2, :].T if pts.shape[1] > 0 else np.empty((0, 2))
                 if self.sp_scale != 1.0 and len(kpts) > 0:
@@ -225,7 +231,12 @@ class VisualSLAM3D:
                 if len(kpts) > 0:
                     sky_mask = self.point_filter.filter_sky_points(img_curr, kpts)
                     kpts = kpts[sky_mask]
-                    desc = desc[:, sky_mask] if desc is not None else None
+                    if desc is not None:
+                        if torch.is_tensor(desc):
+                            sky_mask_t = torch.from_numpy(sky_mask).to(device=desc.device)
+                            desc = desc[:, sky_mask_t]
+                        else:
+                            desc = desc[:, sky_mask]
             else:
                 sp_t0 = time.perf_counter()
                 sp_t1 = sp_t0
@@ -257,7 +268,8 @@ class VisualSLAM3D:
                 self.prev_3d_pts = np.full((len(kpts), 3), np.nan)
                 # 첫 프레임 키프레임 추가
                 self.traj_points.append([0,0,0])
-                self.add_keyframe(frame_idx, kpts, desc)
+                desc_kf = desc.detach().cpu().numpy() if torch.is_tensor(desc) else desc
+                self.add_keyframe(frame_idx, kpts, desc_kf)
                 frame_idx += 1
                 continue
 
@@ -276,13 +288,14 @@ class VisualSLAM3D:
             inliers = 0
             inlier_ratio = 0.0
             map_points_added = 0
+            pose_method = "None"
+            t_vec_log = None
 
             # 디버깅: 특징점 검출 및 매칭 상태 모니터링
             # - desc_dim: descriptor 차원 수
             # - kpts: 현재 프레임에서 검출된 특징점 수
             # - matches: 이전 프레임과 현재 프레임 사이의 매칭된 특징점 쌍의 수
             match_count = len(flow_p1) if use_flow else len(matches)
-            print(f"frame {frame_idx}: desc_dim={None if desc is None else desc.shape[0]}, kpts={len(kpts)}, matches={match_count}")
 
             if use_flow and len(flow_p1) > 8:
                 p1_idx = np.where(status)[0]
@@ -336,14 +349,14 @@ class VisualSLAM3D:
                             t_vec = t_rel[:, 0]
                             inliers = len(inliers_pnp)
                             inlier_ratio = inliers / max(match_count, 1)
+                            pose_method = "PnP"
+                            t_vec_log = t_vec.copy()
                             
                             # Update mask based on PnP inliers for Triangulation
                             mask = np.zeros(len(p1), dtype=np.uint8)
                             pnp_inlier_indices = np.where(valid_3d_mask)[0][inliers_pnp.flatten()]
                             mask[pnp_inlier_indices] = 1
                             
-                            print(f"frame {frame_idx}: [PnP] matches={match_count}, inliers={inliers}, ratio={inlier_ratio:.3f}, scale={tvec_len:.4f}, t={t_vec.round(3)}")
-
                 # 2. PnP 실패 시 Essential Matrix (스케일 정보 상실/1.0 할당)
                 if not pnp_success:
                     E, mask = cv2.findEssentialMat(p2, p1, self.K, method=cv2.RANSAC, prob=0.999, threshold=0.5)
@@ -354,8 +367,8 @@ class VisualSLAM3D:
                         t_vec = t[:, 0]
                         # 방향만 보존하고 기본 1.0스케일 부여
                         t_vec = t_vec / (np.linalg.norm(t_vec) + 1e-6)
-                        
-                        print(f"frame {frame_idx}: [Ess] matches={match_count}, inliers={inliers}, ratio={inlier_ratio:.3f}, t={t_vec.round(3)}")
+                        pose_method = "Ess"
+                        t_vec_log = t_vec.copy()
                         
                         if np.isfinite(t_vec).all() and inliers > 10:
                             pnp_success = True # 논리 구조상 성공으로 간주
@@ -431,11 +444,11 @@ class VisualSLAM3D:
             
             # 키프레임 저장 (영상처럼 드문드문 파란 카메라 표시)
             if frame_idx % keyframe_interval == 0:
-                self.add_keyframe(frame_idx, kpts, desc, curr_3d_pts)
+                desc_kf = desc.detach().cpu().numpy() if torch.is_tensor(desc) else desc
+                self.add_keyframe(frame_idx, kpts, desc_kf, curr_3d_pts)
 
             # 2D 뷰 표시
-            img_vis = cv2.cvtColor(img_curr, cv2.COLOR_BGR2GRAY)
-            img_vis = cv2.cvtColor(img_vis, cv2.COLOR_GRAY2BGR)
+            img_vis = img_curr.copy()
             for kp in kpts: cv2.circle(img_vis, (int(kp[0]), int(kp[1])), 2, (0, 255, 255), -1)
             cv2.putText(img_vis, f"Frame: {frame_idx}", (10,30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2)
             cv2.imshow('Processing', img_vis)
@@ -449,6 +462,16 @@ class VisualSLAM3D:
             sp_ms = (sp_t1 - sp_t0) * 1000.0
             match_ms = (match_t1 - match_t0) * 1000.0
             total_ms = (frame_t1 - frame_t0) * 1000.0
+            fps = 1000.0 / max(total_ms, 1e-6)
+
+            print(
+                f"frame {frame_idx}: "
+                f"desc_dim={None if desc is None else desc.shape[0]}, "
+                f"kpts={len(kpts)}, matches={match_count}, "
+                f"method={pose_method}, inliers={inliers}, ratio={inlier_ratio:.3f}, "
+                f"t={None if t_vec_log is None else np.round(t_vec_log, 3)}, "
+                f"total_ms={total_ms:.1f}, fps={fps:.2f}"
+            )
 
             self.sp_ms_list.append(sp_ms)
             self.match_ms_list.append(match_ms)

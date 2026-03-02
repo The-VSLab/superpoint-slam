@@ -85,7 +85,7 @@ def build_parser():
                         help="Grid-based NMS / 균일 분포 활성화")
     parser.add_argument("--uniform_grid", nargs=2, type=int, default=[8, 6],
                         help="균일 분포용 그리드 [gx gy]")
-    parser.add_argument("--sp_fp16", action=argparse.BooleanOptionalAction, default=False,
+    parser.add_argument("--sp_fp16", action=argparse.BooleanOptionalAction, default=True,
                         help="FP16 추론 활성화 (CUDA 전용)")
     parser.add_argument("--deterministic", action=argparse.BooleanOptionalAction, default=False,
                         help="재현성 모드(고정 seed + deterministic 연산) 활성화")
@@ -94,6 +94,10 @@ def build_parser():
     parser.add_argument("--output_dir", type=str, default="result", help="출력 루트 디렉토리")
     parser.add_argument("--show_display", action=argparse.BooleanOptionalAction, default=True,
                         help="실시간 화면 표시 (기본: 활성화, --no-show_display로 비활성화)")
+    parser.add_argument("--sp_scale", type=float, default=0.85,
+                        help="3D 모드 SuperPoint 입력 스케일(0.1~1.0, 낮을수록 빠름)")
+    parser.add_argument("--sp_interval", type=int, default=2,
+                        help="3D 모드 SuperPoint 추론 간격(1=매프레임, 높을수록 빠름)")
     
     return parser
 
@@ -217,9 +221,9 @@ def run_3d_slam(opt):
         weights_path=opt.weights,
         input_path=opt.input,
         nn_thresh=opt.nn_thresh,
-        sp_scale=1.0,
-        sp_interval=1,
-        sp_fp16=False,
+        sp_scale=opt.sp_scale,
+        sp_interval=opt.sp_interval,
+        sp_fp16=opt.sp_fp16,
         output_dir=str(out_dir)
     )
     

@@ -5,6 +5,7 @@ GPU 기반 BT-Matcher (Batch Topk Matcher) 구현
 GPU를 활용하여 대규모 특징점 매칭을 빠르고 효율적으로 수행합니다.
 """
 import torch
+import torch.nn.functional as F
 import numpy as np
 import cv2
 
@@ -37,14 +38,21 @@ class BTMatcher:
 
         # 2. Numpy -> Tensor 변환 및 Device 이동
         if isinstance(desc1, np.ndarray):
-            d1 = torch.from_numpy(desc1).float().to(self.device)
+            d1 = torch.from_numpy(desc1).to(self.device, non_blocking=True)
         else:
-            d1 = desc1.float().to(self.device)
+            d1 = desc1
+            if d1.device != self.device:
+                d1 = d1.to(self.device, non_blocking=True)
             
         if isinstance(desc2, np.ndarray):
-            d2 = torch.from_numpy(desc2).float().to(self.device)
+            d2 = torch.from_numpy(desc2).to(self.device, non_blocking=True)
         else:
-            d2 = desc2.float().to(self.device)
+            d2 = desc2
+            if d2.device != self.device:
+                d2 = d2.to(self.device, non_blocking=True)
+
+        d1 = d1.float()
+        d2 = d2.float()
 
         # ==========================================================
         # ★ 차원 전치 (Transpose) ★
@@ -53,34 +61,40 @@ class BTMatcher:
         d1 = d1.t()
         d2 = d2.t()
 
-        # 3. 거리 행렬 계산 (Euclidean Distance)
+        # 3. 거리 행렬 계산 (L2 정규화 벡터의 제곱 거리: 2 - 2*cosine)
         try:
-            dist_mat = torch.cdist(d1, d2, p=2) # [N1, N2]
+            d1 = F.normalize(d1, p=2, dim=1, eps=1e-8)
+            d2 = F.normalize(d2, p=2, dim=1, eps=1e-8)
+            sim_mat = torch.matmul(d1, d2.t())
+            dist_mat_sq = torch.clamp(2.0 - 2.0 * sim_mat, min=0.0)
         except RuntimeError:
             # VRAM 부족 시 CPU로 폴백
             d1 = d1.cpu()
             d2 = d2.cpu()
-            dist_mat = torch.cdist(d1, d2, p=2)
+            d1 = F.normalize(d1, p=2, dim=1, eps=1e-8)
+            d2 = F.normalize(d2, p=2, dim=1, eps=1e-8)
+            sim_mat = torch.matmul(d1, d2.t())
+            dist_mat_sq = torch.clamp(2.0 - 2.0 * sim_mat, min=0.0)
 
         # 4. Nearest Neighbor Search (Lowe's Ratio Test를 위해 2개 추출)
         if self.ratio_thresh < 1.0 and d2.shape[0] >= 2:
-            top_dist, top_idxs = torch.topk(dist_mat, k=2, dim=1, largest=False)
-            min_dist = top_dist[:, 0]
+            top_dist_sq, top_idxs = torch.topk(dist_mat_sq, k=2, dim=1, largest=False)
+            min_dist_sq = top_dist_sq[:, 0]
             idxs = top_idxs[:, 0]
-            ratio_mask = (min_dist < self.ratio_thresh * top_dist[:, 1])
+            ratio_mask = (min_dist_sq < (self.ratio_thresh ** 2) * top_dist_sq[:, 1])
         else:
-            min_dist, idxs = torch.min(dist_mat, dim=1)
-            ratio_mask = torch.ones_like(min_dist, dtype=torch.bool)
+            min_dist_sq, idxs = torch.min(dist_mat_sq, dim=1)
+            ratio_mask = torch.ones_like(min_dist_sq, dtype=torch.bool)
 
         # 5. 매칭 필터링
         if self.mutual:
             # 상호 매칭 (Mutual Check)
-            min_dist2, idxs2 = torch.min(dist_mat, dim=0)
+            _, idxs2 = torch.min(dist_mat_sq, dim=0)
             match_check = (idxs2[idxs] == torch.arange(d1.shape[0], device=d1.device))
-            valid_mask = (min_dist < self.nn_thresh) & match_check & ratio_mask
+            valid_mask = (min_dist_sq < (self.nn_thresh ** 2)) & match_check & ratio_mask
         else:
             # 단순 거리 임계값
-            valid_mask = (min_dist < self.nn_thresh) & ratio_mask
+            valid_mask = (min_dist_sq < (self.nn_thresh ** 2)) & ratio_mask
 
         # 6. 결과 인덱스 추출
         idx1 = torch.arange(d1.shape[0], device=d1.device)[valid_mask]

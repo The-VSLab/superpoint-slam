@@ -21,6 +21,7 @@ class LoopClosureManager:
         top_k=5,
         min_inliers=30,
         min_inlier_ratio=0.25,
+        verbose=True,
     ):
         self.matcher = matcher
         self.K = K
@@ -28,6 +29,7 @@ class LoopClosureManager:
         self.top_k = int(top_k)
         self.min_inliers = int(min_inliers)
         self.min_inlier_ratio = float(min_inlier_ratio)
+        self.verbose = bool(verbose)
         self.keyframes = []
 
     def add_keyframe(self, frame_idx, kpts, desc, pts_3d=None):
@@ -67,7 +69,8 @@ class LoopClosureManager:
         candidates = [c for c in candidates if c[0] > 0.90]
 
         for sim, cand_idx in candidates[: self.top_k]:
-            print(f"  [Loop Search] Testing Frame {self.keyframes[cand_idx]['frame_idx']} (sim: {sim:.3f})...")
+            if self.verbose:
+                print(f"  [Loop Search] Testing Frame {self.keyframes[cand_idx]['frame_idx']} (sim: {sim:.3f})...")
             result = self._verify_candidate(cand_idx, kpts, desc)
             if result is not None:
                 return result
@@ -106,13 +109,14 @@ class LoopClosureManager:
                 obj_pts_c = np.ascontiguousarray(obj_pts).reshape(-1, 1, 3)
                 img_pts_c = np.ascontiguousarray(img_pts).reshape(-1, 1, 2)
                 
-                print(f"  [Loop PnP Debug] Valid 3D points: {len(obj_pts)}")
+                if self.verbose:
+                    print(f"  [Loop PnP Debug] Valid 3D points: {len(obj_pts)}")
                 
                 dist_coeffs = np.zeros(4, dtype=np.float32)
                 
                 success, rvec, tvec, inliers_pnp = cv2.solvePnPRansac(
                     obj_pts_c, img_pts_c, self.K, dist_coeffs, 
-                    iterationsCount=1000,
+                    iterationsCount=300,
                     reprojectionError=15.0,
                     confidence=0.99,
                     flags=cv2.SOLVEPNP_ITERATIVE
@@ -130,7 +134,8 @@ class LoopClosureManager:
                         transform[:3, 3] = -R.T @ tvec[:, 0]
                         
                         scale = np.linalg.norm(transform[:3, 3])
-                        print(f"\n🟢 [LOOP FOUND (PnP)] Frame {cand['frame_idx']} <-> Curr | Inliers: {inliers} | Scale: {scale:.3f}")
+                        if self.verbose:
+                            print(f"\n🟢 [LOOP FOUND (PnP)] Frame {cand['frame_idx']} <-> Curr | Inliers: {inliers} | Scale: {scale:.3f}")
                         
                         return LoopClosureResult(
                             match_index=cand_idx,
@@ -140,9 +145,11 @@ class LoopClosureManager:
                             matches=int(matches.shape[0]),
                         )
                     else:
-                        print(f"  [Loop PnP Debug] Rejected by Thresholds: inliers={inliers}/5, ratio={inlier_ratio:.2f}/0.01")
+                        if self.verbose:
+                            print(f"  [Loop PnP Debug] Rejected by Thresholds: inliers={inliers}/5, ratio={inlier_ratio:.2f}/0.01")
                 else:
-                    print(f"  [Loop PnP Debug] solvePnPRansac failed mathematically. success={success}")
+                    if self.verbose:
+                        print(f"  [Loop PnP Debug] solvePnPRansac failed mathematically. success={success}")
         
         # 3D 맵포인트가 불충분할 경우 Fallback (Essential Matrix)
         p1 = cand["kpts"][matches[:, 0], :2].astype(np.float64)
@@ -168,7 +175,8 @@ class LoopClosureManager:
         transform[:3, :3] = R.T
         transform[:3, 3] = -R.T @ t[:, 0]
 
-        print(f"\n🟡 [LOOP FOUND (Ess)] Frame {cand['frame_idx']} <-> Curr | Inliers: {inliers} ({inlier_ratio:.1%}) | Scale: 1.000")
+        if self.verbose:
+            print(f"\n🟡 [LOOP FOUND (Ess)] Frame {cand['frame_idx']} <-> Curr | Inliers: {inliers} ({inlier_ratio:.1%}) | Scale: 1.000")
 
         return LoopClosureResult(
             match_index=cand_idx,
