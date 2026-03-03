@@ -53,37 +53,42 @@ class BTMatcher:
         d1 = d1.t()
         d2 = d2.t()
 
-        # 3. 거리 행렬 계산 (Euclidean Distance)
-        try:
-            dist_mat = torch.cdist(d1, d2, p=2) # [N1, N2]
-        except RuntimeError:
-            # VRAM 부족 시 CPU로 폴백
-            d1 = d1.cpu()
-            d2 = d2.cpu()
-            dist_mat = torch.cdist(d1, d2, p=2)
+        # 3. 효율적인 코사인 유사도 연산 (Dot Product)
+        # desc1, desc2는 이미 단위 크기(L2 normalized)로 정규화되어 있으므로 내적으로 코사인 유사도 계산
+        # d1: [N1, 256], d2: [N2, 256]. inner product를 위해 d2를 다시 transpose
+        sim_mat = torch.mm(d1, d2.t())
+
+        # 코사인 유사도를 유클리드 거리 제곱(Squared Euclidean)으로 변환
+        # d^2 = 2 - 2 * cos(theta)
+        # sqrt 연산을 피하기 위해 모든 임계값을 제곱 단위로 비교합니다.
+        dist_sq = torch.clamp(2.0 - 2.0 * sim_mat, min=0.0)
 
         # 4. Nearest Neighbor Search (Lowe's Ratio Test를 위해 2개 추출)
         if self.ratio_thresh < 1.0 and d2.shape[0] >= 2:
-            top_dist, top_idxs = torch.topk(dist_mat, k=2, dim=1, largest=False)
-            min_dist = top_dist[:, 0]
+            top_dist_sq, top_idxs = torch.topk(dist_sq, k=2, dim=1, largest=False)
+            min_dist_sq = top_dist_sq[:, 0]
             idxs = top_idxs[:, 0]
-            ratio_mask = (min_dist < self.ratio_thresh * top_dist[:, 1])
+            # Ratio Test: d1 < ratio * d2  ==>  d1^2 < ratio^2 * d2^2
+            ratio_sq = self.ratio_thresh ** 2
+            ratio_mask = (min_dist_sq < ratio_sq * top_dist_sq[:, 1])
         else:
-            min_dist, idxs = torch.min(dist_mat, dim=1)
-            ratio_mask = torch.ones_like(min_dist, dtype=torch.bool)
+            min_dist_sq, idxs = torch.min(dist_sq, dim=1)
+            ratio_mask = torch.ones_like(min_dist_sq, dtype=torch.bool)
 
         # 5. 매칭 필터링
+        nn_thresh_sq = self.nn_thresh ** 2
+        
         if self.mutual:
             # 상호 매칭 (Mutual Check)
-            min_dist2, idxs2 = torch.min(dist_mat, dim=0)
-            match_check = (idxs2[idxs] == torch.arange(d1.shape[0], device=d1.device))
-            valid_mask = (min_dist < self.nn_thresh) & match_check & ratio_mask
+            min_dist_sq2, idxs2 = torch.min(dist_sq, dim=0)
+            match_check = (idxs2[idxs] == torch.arange(d1.shape[0], device=self.device))
+            valid_mask = (min_dist_sq < nn_thresh_sq) & match_check & ratio_mask
         else:
             # 단순 거리 임계값
-            valid_mask = (min_dist < self.nn_thresh) & ratio_mask
+            valid_mask = (min_dist_sq < nn_thresh_sq) & ratio_mask
 
         # 6. 결과 인덱스 추출
-        idx1 = torch.arange(d1.shape[0], device=d1.device)[valid_mask]
+        idx1 = torch.arange(d1.shape[0], device=self.device)[valid_mask]
         idx2 = idxs[valid_mask]
 
         matches = torch.stack([idx1, idx2], dim=1)

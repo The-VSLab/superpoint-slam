@@ -3,6 +3,7 @@ import numpy as np
 import cv2
 import torch
 import open3d as o3d
+import g2o
 import os
 import time
 import sys
@@ -140,7 +141,10 @@ class VisualSLAM3D:
         self.keyframe_original_poses = []  # 최적화 전 원본 포즈
         self.traj_points = []
         self.last_t_vec = np.array([0.0, 0.0, 1.0]) 
-        self.pose_graph = o3d.pipelines.registration.PoseGraph()
+        
+        # g2o Sim3 Pose Graph 최적화기 설정
+        self.g2o_optimizer = None
+        self.g2o_edges = []
         self.jetson_scale = jetson_scale
 
         self.save_dir = str(output_dir)
@@ -373,7 +377,6 @@ class VisualSLAM3D:
                         t_vec[1] *= 0.05 # Y(상하) 억제
                         # 3. 관성 적용 (이전 속도와 혼합)
                         t_vec = t_vec * 0.6 + self.last_t_vec * 0.4
-
                     self.last_t_vec = t_vec
                     
                     # Pose Update (Relative to absolute)
@@ -391,9 +394,9 @@ class VisualSLAM3D:
                     if len(p1_m) > 0:
                         local_pts = self.triangulate(R, t_vec.reshape(3,1), p1_m, p2_m)
                         
-                        # 필터링 (너무 멀거나 비상식적인 점 제거, 단 루프클로저를 위해 넉넉히 허용)
-                        valid = (local_pts[:, 2] > 0.1) & (local_pts[:, 2] < 500) & \
-                                (np.abs(local_pts[:, 0]) < 500) & (np.abs(local_pts[:, 1]) < 500)
+                        # 필터링 (너무 멀거나 비상식적인 점 제거 - 주변 건물/도로 환경 고려하여 반경 확대)
+                        valid = (local_pts[:, 2] > 0.5) & (local_pts[:, 2] < 150.0) & \
+                                (np.abs(local_pts[:, 0]) < 100.0) & (np.abs(local_pts[:, 1]) < 20.0)
                         local_pts = local_pts[valid]
                         valid_indices = p2_idx_m[valid]
                         
@@ -408,9 +411,7 @@ class VisualSLAM3D:
                             # 월드 좌표계 투영 (실시간 시각화용, 최적화 후 재구축됨)
                             world_pts = (self.cur_pose[:3, :3] @ local_pts.T).T + self.cur_pose[:3, 3]
                             
-                            # [청소] 바닥 아래 지하 노이즈 제거
-                            valid_ground = world_pts[:, 1] < 1.8
-                            world_pts = world_pts[valid_ground]
+                            # 투영된 포인트 바로 저장
                             map_points_added = int(world_pts.shape[0])
 
                             cols = get_height_color(world_pts[:, 1])
@@ -431,7 +432,7 @@ class VisualSLAM3D:
             
             # 키프레임 저장 (영상처럼 드문드문 파란 카메라 표시)
             if frame_idx % keyframe_interval == 0:
-                self.add_keyframe(frame_idx, kpts, desc, curr_3d_pts)
+                self.add_keyframe(frame_idx, kpts, desc, curr_3d_pts, T_rel.copy())
 
             # 2D 뷰 표시
             img_vis = cv2.cvtColor(img_curr, cv2.COLOR_BGR2GRAY)
@@ -478,76 +479,102 @@ class VisualSLAM3D:
         self.print_perf_summary()
         self.visualize_final_result()
 
-    def add_keyframe(self, frame_idx, kpts, desc, pts_3d=None):
+    def add_keyframe(self, frame_idx, kpts, desc, pts_3d=None, T_rel=None):
         self.keyframes.append(self.cur_pose.copy())
         self.keyframe_indices.append(frame_idx)
         self.keyframe_local_pts.append([])  # 이 키프레임에 등록될 로컬 3D 포인트들
         self.keyframe_original_poses.append(self.cur_pose.copy())
 
-        node_idx = len(self.pose_graph.nodes)
-        self.pose_graph.nodes.append(
-            o3d.pipelines.registration.PoseGraphNode(self.cur_pose.copy())
-        )
+        node_idx = len(self.keyframes) - 1
 
-        if node_idx > 0:
-            prev_pose = self.pose_graph.nodes[node_idx - 1].pose
-            rel = np.linalg.inv(prev_pose) @ self.cur_pose
-            information = np.eye(6)
-            self.pose_graph.edges.append(
-                o3d.pipelines.registration.PoseGraphEdge(
-                    node_idx - 1,
-                    node_idx,
-                    rel,
-                    information,
-                    uncertain=False,
-                )
-            )
+        if node_idx > 0 and T_rel is not None:
+            self.g2o_edges.append({
+                'type': 'odom',
+                'from': node_idx - 1,
+                'to': node_idx,
+                'transform': T_rel.copy(),
+                'scale': 1.0,
+                'information_scale': 1.0,
+            })
 
         self.loop_closure.add_keyframe(frame_idx, kpts, desc, pts_3d)
         loop = self.loop_closure.find_loop(frame_idx, kpts, desc)
         if loop is not None:
-            # Open3D 최적화기가 발산(diverge)하지 않도록 Loop Transform의 스케일을 단방향 오도메트리와 동일하게 1.0으로 정규화
-            normalized_transform = loop.transform.copy()
-            t = normalized_transform[:3, 3]
-            scale = np.linalg.norm(t)
+            # Sim3에서는 스케일 정보를 보존하여 전달 (정규화 없음!)
+            scale = loop.scale
+            print(f"  [Pose Graph] g2o Sim3 Edge: Scale={scale:.3f} (정규화 없이 보존)")
             
-            if scale > 0:
-                normalized_transform[:3, 3] = t / scale
-            
-            print(f"  [Pose Graph] Normalizing PnP Edge Scale: {scale:.3f} -> 1.000")
-            
-            # Loop 클로저 엣지는 신뢰도를 낮게 설정 (Information Matrix 작게)
-            information = np.eye(6) * 0.1 
-            self.pose_graph.edges.append(
-                o3d.pipelines.registration.PoseGraphEdge(
-                    loop.match_index,
-                    node_idx,
-                    normalized_transform,
-                    information,
-                    uncertain=True,
-                )
-            )
+            # 루프 클로저 엣지 저장
+            self.g2o_edges.append({
+                'type': 'loop',
+                'from': loop.match_index,
+                'to': node_idx,
+                'transform': loop.transform,
+                'scale': scale,
+                'information_scale': 1.0,  # 루프 엣지는 본 체인에서 특수 처리
+            })
             self.optimize_pose_graph()
 
+    def _build_g2o_optimizer(self):
+        """g2o Sim3 Pose Graph 최적화기 구축"""
+        optimizer = g2o.SparseOptimizer()
+        solver = g2o.BlockSolverSE3(g2o.LinearSolverDenseSE3())
+        algorithm = g2o.OptimizationAlgorithmLevenberg(solver)
+        optimizer.set_algorithm(algorithm)
+        return optimizer
+
     def optimize_pose_graph(self):
-        if len(self.pose_graph.nodes) < 2:
+        if len(self.keyframes) < 2:
             return
 
-        option = o3d.pipelines.registration.GlobalOptimizationOption(
-            max_correspondence_distance=1.0,
-            edge_prune_threshold=0.25,
-            reference_node=0,
-        )
-        o3d.pipelines.registration.global_optimization(
-            self.pose_graph,
-            o3d.pipelines.registration.GlobalOptimizationLevenbergMarquardt(),
-            o3d.pipelines.registration.GlobalOptimizationConvergenceCriteria(),
-            option,
-        )
+        optimizer = self._build_g2o_optimizer()
 
-        for i, node in enumerate(self.pose_graph.nodes):
-            self.keyframes[i] = node.pose.copy()
-        self.cur_pose = self.pose_graph.nodes[-1].pose.copy()
+        # 1. 노드 추가 (SE3 vertex)
+        for i, pose in enumerate(self.keyframes):
+            v = g2o.VertexSE3()
+            v.set_id(i)
+            v.set_estimate(g2o.Isometry3d(pose))
+            if i == 0:
+                v.set_fixed(True)  # 첫 번째 키프레임 고정
+            optimizer.add_vertex(v)
+
+        # 2. 엣지 추가
+        for edge_info in self.g2o_edges:
+            e = g2o.EdgeSE3()
+            e.set_vertex(0, optimizer.vertex(edge_info['from']))
+            e.set_vertex(1, optimizer.vertex(edge_info['to']))
+            
+            transform = edge_info['transform'].copy()
+            
+            if edge_info['type'] == 'loop':
+                # PnP 기반 루프 엣지: PnP가 돌려준 스케일(거리) 정보를 그대로 보존해야
+                # g2o가 전체 Odometry 궤적의 스케일 드리프트를 펴줄 수 있습니다.
+                
+                # 비등방 Information Matrix:
+                # - 회전(0-2): 높은 신뢰도 (방향 보정에 탁월)
+                # - 병진(3-5): PnP inlier 품질 향상(15개 이상)에 따라 병진 신뢰도도 어느정도 반영
+                info = np.eye(6)
+                info[0, 0] = info[1, 1] = info[2, 2] = 10.0  # 회전 강하게
+                info[3, 3] = info[4, 4] = info[5, 5] = 1.0   # 병진도 정상 반영
+            else:
+                # 오도메트리 엣지: 등방 Information Matrix
+                info = np.eye(6) * edge_info['information_scale']
+            
+            e.set_measurement(g2o.Isometry3d(transform))
+            e.set_information(info)
+            optimizer.add_edge(e)
+
+        # 3. 최적화 실행
+        optimizer.initialize_optimization()
+        optimizer.optimize(20)
+
+        # 4. 결과 추출 → 키프레임 포즈 갱신
+        for i in range(len(self.keyframes)):
+            v = optimizer.vertex(i)
+            if v is not None:
+                self.keyframes[i] = v.estimate().matrix().copy()
+        
+        self.cur_pose = self.keyframes[-1].copy()
 
     def print_perf_summary(self):
         if not self.total_ms_list:
@@ -581,10 +608,6 @@ class VisualSLAM3D:
                     continue
                 # 최적화된 포즈로 월드 좌표계 재투영
                 world_pts = (optimized_pose[:3, :3] @ local_pts.T).T + optimized_pose[:3, 3]
-                
-                # 노이즈 제거
-                valid_ground = world_pts[:, 1] < 1.8
-                world_pts = world_pts[valid_ground]
                 
                 if len(world_pts) > 0:
                     cols = get_height_color(world_pts[:, 1])

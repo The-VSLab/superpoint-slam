@@ -10,6 +10,7 @@ class LoopClosureResult:
     inliers: int
     inlier_ratio: float
     matches: int
+    scale: float  # PnP에서 구한 스케일 (Essential Matrix fallback 시 1.0)
 
 
 class LoopClosureManager:
@@ -122,8 +123,8 @@ class LoopClosureManager:
                     inliers = len(inliers_pnp)
                     inlier_ratio = inliers / max(len(obj_pts), 1)
                     
-                    # 루프 클로저는 PnP inlier 수가 적더라도 기하학적 스케일을 획득하는 데 의미가 있음
-                    if inliers >= 5 and inlier_ratio >= 0.01:
+                    # 진짜 루프만 수락 (inlier 10개 이상, 적당한 비율)
+                    if inliers >= 10 and inlier_ratio >= 0.05:
                         R, _ = cv2.Rodrigues(rvec)
                         transform = np.eye(4)
                         transform[:3, :3] = R.T
@@ -138,42 +139,13 @@ class LoopClosureManager:
                             inliers=inliers,
                             inlier_ratio=inlier_ratio,
                             matches=int(matches.shape[0]),
+                            scale=scale,
                         )
                     else:
                         print(f"  [Loop PnP Debug] Rejected by Thresholds: inliers={inliers}/5, ratio={inlier_ratio:.2f}/0.01")
                 else:
                     print(f"  [Loop PnP Debug] solvePnPRansac failed mathematically. success={success}")
         
-        # 3D 맵포인트가 불충분할 경우 Fallback (Essential Matrix)
-        p1 = cand["kpts"][matches[:, 0], :2].astype(np.float64)
-        p2 = kpts[matches[:, 1], :2].astype(np.float64)
-
-        if len(p1) < 8:
-            return None
-
-        E, mask = cv2.findEssentialMat(
-            p2, p1, self.K, method=cv2.RANSAC, prob=0.999, threshold=1.0
-        )
-        if E is None:
-            return None
-
-        _, R, t, mask = cv2.recoverPose(E, p2, p1, self.K)
-        inliers = np.count_nonzero(mask) if mask is not None else 0
-        inlier_ratio = inliers / max(matches.shape[0], 1)
-
-        if inliers < self.min_inliers or inlier_ratio < self.min_inlier_ratio:
-            return None
-
-        transform = np.eye(4)
-        transform[:3, :3] = R.T
-        transform[:3, 3] = -R.T @ t[:, 0]
-
-        print(f"\n🟡 [LOOP FOUND (Ess)] Frame {cand['frame_idx']} <-> Curr | Inliers: {inliers} ({inlier_ratio:.1%}) | Scale: 1.000")
-
-        return LoopClosureResult(
-            match_index=cand_idx,
-            transform=transform,
-            inliers=inliers,
-            inlier_ratio=inlier_ratio,
-            matches=int(matches.shape[0]),
-        )
+        # 3D 맵포인트가 불충분하거나 PnP가 실패한 경우, 스케일이 없는 Essential Matrix로는 
+        # 올바른 루프 클로저(SE3) 엣지를 생성할 수 없으므로 루프를 기각합니다.
+        return None
