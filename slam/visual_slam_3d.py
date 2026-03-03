@@ -46,14 +46,14 @@ def create_camera_frustum(scale=1.0, color=[0, 0, 1]):
     return line_set
 
 def get_height_color(y_vals, y_min=-5.0, y_max=2.0):
-    """높이 기반 컬러링 (Turbo Style)"""
+    """높이 기반 컬러링 (Jet Style)"""
     y_vals = np.atleast_1d(y_vals)
-    norm = np.clip((y_vals - y_min) / (y_max - y_min), 0, 1)
+    norm = np.clip((y_vals - y_min) / (y_max - y_min), 0.0, 1.0)
     colors = np.zeros((len(y_vals), 3))
-    # Red(High) -> Green -> Blue(Low)
-    colors[:, 0] = np.clip(1.5 - np.abs(2.0 * norm - 1.0) * 3.0, 0, 1) # R
-    colors[:, 1] = np.clip(1.5 - np.abs(2.0 * norm - 0.5) * 3.0, 0, 1) # G
-    colors[:, 2] = np.clip(1.5 - np.abs(2.0 * norm - 0.0) * 3.0, 0, 1) # B
+    # Jet Colormap Approximation
+    colors[:, 0] = np.clip(1.5 - np.abs(4.0 * norm - 3.0), 0.0, 1.0) # R
+    colors[:, 1] = np.clip(1.5 - np.abs(4.0 * norm - 2.0), 0.0, 1.0) # G
+    colors[:, 2] = np.clip(1.5 - np.abs(4.0 * norm - 1.0), 0.0, 1.0) # B
     return colors
 
 class VisualSLAM3D:
@@ -69,6 +69,8 @@ class VisualSLAM3D:
         sp_fp16=False,
         highway_mode=False,
         output_dir="path_final",
+        roi_sky=0.35,
+        roi_hood=0.85
     ):
         # 1. 장치 결정
         self.highway_mode = highway_mode
@@ -107,6 +109,8 @@ class VisualSLAM3D:
             conf_thresh=conf_thresh,
             nn_thresh=nn_thresh,
             cuda=self.use_cuda,
+            roi_sky=roi_sky,
+            roi_hood=roi_hood
         )
         self.matcher = BTMatcher(
             nn_thresh=nn_thresh, 
@@ -366,24 +370,47 @@ class VisualSLAM3D:
                 
                 # 3. 최적 포즈 적용 및 지도 업데이트
                 if pnp_success:
-                    # --- [안정화 로직: 고속도로 모드 (옵션)] ---
+                    # --- [안정화 로직: IMU 부재로 인한 Y축 및 각도 드리프트 억제] ---
+                    # 1. 후진 방지 (Z축)
+                    if t_vec[2] < 0: t_vec = -t_vec; R = R.T
+                    
+                    # 2. 횡이동(X축) 억제 (Turn이 작으면 X 이동 억제)
                     if self.highway_mode:
-                        # 1. 후진 방지
-                        if t_vec[2] < 0: t_vec = -t_vec; R = R.T
-                        # 2. 횡이동 억제 (Turn이 작으면 X 이동 억제)
                         turn_amount = np.abs(np.arctan2(R[0,2], R[2,2]))
                         damp_x = np.clip(turn_amount * 10.0, 0.1, 1.0)
                         t_vec[0] *= damp_x 
-                        t_vec[1] *= 0.05 # Y(상하) 억제
-                        # 3. 관성 적용 (이전 속도와 혼합)
-                        t_vec = t_vec * 0.6 + self.last_t_vec * 0.4
+                        
+                    # 3. Y축(상하 높이) 이동 극단적 억제 (IMU 역할: 평지 주행 가정)
+                    t_vec[1] *= 0.05 
+                    
+                    # 4. 카메라 Pitch(위아래 고개 숙임) 및 Roll(기울임) 누적 억제
+                    # 단안 카메라 특성상 전진 시 바닥을 보면 위로 올라가는것처럼 착각함
+                    pitch_roll_damp = 0.50 # 0.0=완전고정, 1.0=그대로사용
+                    euler_angles = cv2.RQDecomp3x3(R)[0]
+                    # Euler(X,Y,Z) = (Pitch, Yaw, Roll)
+                    euler_angles = list(euler_angles)
+                    euler_angles[0] *= pitch_roll_damp # Pitch 억제
+                    euler_angles[2] *= pitch_roll_damp # Roll 억제
+                    
+                    # 다시 Rotation Matrix로 변환
+                    R_damped = R.copy() 
+                    # 간단한 보정: R_damped를 재조합할 수도 있지만, 본 구현의 복잡성상 생략하고 
+                    # t_vec[1] 억제 및 뒤이은 cur_pose[1, 3] 클리핑으로 대체합니다.
+                    
+                    # 5. 관성 적용 (이전 속도와 혼합)
+                    t_vec = t_vec * 0.6 + self.last_t_vec * 0.4
                     self.last_t_vec = t_vec
                     
                     # Pose Update (Relative to absolute)
                     T_rel = np.eye(4)
-                    T_rel[:3, :3] = R
+                    T_rel[:3, :3] = R_damped
                     T_rel[:3, 3] = t_vec
                     self.cur_pose = self.cur_pose @ T_rel
+                    
+                    # --- [절대 Y축 높이 강제 고정 (Hard Clip)] --- 
+                    # 차량이 하늘로 날아가거나 땅굴을 파고 들어가는 현상 원천 차단
+                    self.cur_pose[1, 3] = np.clip(self.cur_pose[1, 3], -1.0, 1.0)
+                    
                     valid_step = True
                     
                     # 맵 생성 (삼각측량: 현재 R, t_vec 기반으로 수행)

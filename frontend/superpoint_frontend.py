@@ -11,7 +11,8 @@ class SuperPointFrontend(object):
     """PyTorch 네트워크를 감싸서 이미지 전처리 및 후처리를 도와주는 클래스"""
 
     def __init__(
-        self, weights_path=None, nms_dist=4, conf_thresh=0.015, nn_thresh=0.7, max_keypoints=1000, cuda=False
+        self, weights_path=None, nms_dist=4, conf_thresh=0.015, nn_thresh=0.7, max_keypoints=1000, cuda=False,
+        roi_sky=0.35, roi_hood=0.85
     ):
         self.name = "SuperPointV2"
         self.max_keypoints = max_keypoints
@@ -19,6 +20,8 @@ class SuperPointFrontend(object):
         self.nms_dist = nms_dist
         self.conf_thresh = conf_thresh
         self.nn_thresh = nn_thresh  # 좋은 매칭을 위한 L2 디스크립터 거리 임계값
+        self.roi_sky = roi_sky
+        self.roi_hood = roi_hood
         self.cell = 8  # 각 출력 셀의 크기. 고정값입니다.
         self.border_remove = 4  # 경계에서 이 거리만큼 가까운 점들을 제거
 
@@ -187,7 +190,17 @@ class SuperPointFrontend(object):
         toremoveW = np.logical_or(pts[0, :] < bord, pts[0, :] >= (W - bord))
         toremoveH = np.logical_or(pts[1, :] < bord, pts[1, :] >= (H - bord))
         toremove = np.logical_or(toremoveW, toremoveH)
-        pts = pts[:, ~toremove]
+        
+        # --- ROI 강제 마스킹 추가 (자율주행 블랙박스 특화) ---
+        # 하늘 및 본넷 영역의 점들을 노이즈로 간주하고 강제 삭제 (파라미터화)
+        sky_limit_y = int(H * self.roi_sky)
+        hood_limit_y = int(H * self.roi_hood)
+        toremove_roi = np.logical_or(pts[1, :] < sky_limit_y, pts[1, :] >= hood_limit_y)
+        
+        # 기존 경계선 제거 조건과 ROI 조건을 합쳐서 삭제
+        toremove_final = np.logical_or(toremove, toremove_roi)
+        pts = pts[:, ~toremove_final]
+        
         # 점 개수 제한
         if self.max_keypoints > 0 and pts.shape[1] > self.max_keypoints:
             pts = pts[:, :self.max_keypoints]

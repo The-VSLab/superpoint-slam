@@ -58,7 +58,13 @@ def build_parser():
     parser.add_argument("--use_shadow_filter", action=argparse.BooleanOptionalAction, default=True,
                         help="그림자 기반 특징점 필터 활성화")
     parser.add_argument("--use_top_region_filter", action=argparse.BooleanOptionalAction, default=True,
-                        help="영상 상단 영역(하늘) 특징점 억제 필터 활성화")
+                        help="최상단 20% 강제 특징점 제거 필터 활성화(기본: True)")
+    
+    # ROI 강제 마스킹 설정 (자율주행 환경 특화)
+    parser.add_argument("--roi_sky", type=float, default=0.35,
+                        help="하늘 마스킹 영역(상단 비율, 0.0이면 비활성화, 기본: 0.35)")
+    parser.add_argument("--roi_hood", type=float, default=0.85,
+                        help="본넷 마스킹 영역(하단 비율, 1.0이면 비활성화, 기본: 0.85)")
     parser.add_argument("--shadow_value_thresh", type=float, default=0.46,
                         help="그림자 명도 임계값(낮을수록 더 어두운 영역만 제거)")
     parser.add_argument("--shadow_saturation_thresh", type=float, default=0.30,
@@ -220,7 +226,9 @@ def run_3d_slam(opt):
         sp_scale=1.0,
         sp_interval=1,
         sp_fp16=False,
-        output_dir=str(out_dir)
+        output_dir=str(out_dir),
+        roi_sky=opt.roi_sky,
+        roi_hood=opt.roi_hood
     )
     
     slam.process()

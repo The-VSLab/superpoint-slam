@@ -64,8 +64,8 @@ class LoopClosureManager:
             return None
 
         candidates.sort(key=lambda x: x[0], reverse=True)
-        # 0.95 이상인 유력 후보만 필터링 (불필요한 기하 연산 방지)
-        candidates = [c for c in candidates if c[0] > 0.90]
+        # 0.97 이상인 유력 후보만 필터링 (불필요한 기하 연산 및 고속도로 False Positive 방지)
+        candidates = [c for c in candidates if c[0] > 0.97]
 
         for sim, cand_idx in candidates[: self.top_k]:
             print(f"  [Loop Search] Testing Frame {self.keyframes[cand_idx]['frame_idx']} (sim: {sim:.3f})...")
@@ -98,33 +98,33 @@ class LoopClosureManager:
             p1_3d = cand["pts_3d"][matches[:, 0]]
             p2_2d = kpts[matches[:, 1], :2].astype(np.float64)
             
-            valid_mask = ~np.isnan(p1_3d[:, 0])
-            obj_pts = p1_3d[valid_mask].astype(np.float32)
-            img_pts = p2_2d[valid_mask].astype(np.float32)
+            valid_3d_mask = ~np.isnan(p1_3d[:, 0])
+            obj_pts_c = p1_3d[valid_3d_mask].astype(np.float32)
+            img_pts_c = p2_2d[valid_3d_mask].astype(np.float32)
             
-            if len(obj_pts) >= 15:
+            if len(obj_pts_c) >= 15:
                 # [중요] OpenCV C++ 바인딩 오류 방지를 위해 명시적 형태 정의
-                obj_pts_c = np.ascontiguousarray(obj_pts).reshape(-1, 1, 3)
-                img_pts_c = np.ascontiguousarray(img_pts).reshape(-1, 1, 2)
+                # obj_pts_c = np.ascontiguousarray(obj_pts).reshape(-1, 1, 3) # Already done above
+                # img_pts_c = np.ascontiguousarray(img_pts).reshape(-1, 1, 2) # Already done above
                 
-                print(f"  [Loop PnP Debug] Valid 3D points: {len(obj_pts)}")
+                # print(f"  [Loop PnP Debug] Valid 3D points: {len(obj_pts_c)}")
                 
                 dist_coeffs = np.zeros(4, dtype=np.float32)
                 
                 success, rvec, tvec, inliers_pnp = cv2.solvePnPRansac(
                     obj_pts_c, img_pts_c, self.K, dist_coeffs, 
                     iterationsCount=1000,
-                    reprojectionError=15.0,
+                    reprojectionError=5.0,   # 기하학적 매칭을 매우 엄격하게 (15.0 -> 5.0)
                     confidence=0.99,
                     flags=cv2.SOLVEPNP_ITERATIVE
                 )
                 
                 if success and inliers_pnp is not None:
                     inliers = len(inliers_pnp)
-                    inlier_ratio = inliers / max(len(obj_pts), 1)
+                    inlier_ratio = inliers / max(len(obj_pts_c), 1)
                     
-                    # 진짜 루프만 수락 (inlier 10개 이상, 적당한 비율)
-                    if inliers >= 10 and inlier_ratio >= 0.05:
+                    # 깐깐한 루프 수락: 고속도로 같은 반복 지형에서 False Positive가 발생하지 않도록
+                    if inliers >= 25 and inlier_ratio >= 0.15:
                         R, _ = cv2.Rodrigues(rvec)
                         transform = np.eye(4)
                         transform[:3, :3] = R.T
