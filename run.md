@@ -13,3 +13,7 @@ python .\scripts\superpoint_app.py --mode compare --input .\assets\test2.mp4 --w
 # 3D 모드 연산량 감소 및 매칭 속도 향상
 
 python .\scripts\superpoint_app.py --mode 3d --input .\assets\test2.mp4 --weights .\weights\v14_latest.pth --resize 640 480 --max_kpts 500 --slam_conf_thresh 0.015 --sp_scale 0.5 --sp_interval 2
+
+# ORB 3D 모드 (SuperPoint 없이 ORB로 3D 포인트 클라우드 생성)
+
+python .\scripts\superpoint_app.py --mode 3d --backend orb --input .\assets\test2.mp4 --resize 640 480 --orb_nfeatures 1500 --orb_max_matches 500

@@ -16,6 +16,7 @@ if str(ROOT_DIR) not in sys.path:
 from slam.visual_slam_2d import VisualSLAM2D
 from slam.visual_slam_3d import VisualSLAM3D
 from orbslam.orb_slam_2d import ORBSLAM2D
+from orbslam.orb_slam_3d import ORBSLAM3D
 
 
 def get_next_subdir(output_dir, prefix):
@@ -39,8 +40,10 @@ def build_parser():
     parser = argparse.ArgumentParser(description="SuperPoint SLAM")
     parser.add_argument("--mode", type=str, default="slam", choices=["slam", "compare", "3d"], 
                         help="slam: SuperPoint 2D | compare: SuperPoint vs ORB | 3d: 3D 포인트 클라우드")
+    parser.add_argument("--backend", type=str, default="superpoint", choices=["superpoint", "orb"],
+                        help="3d 모드에서 사용할 백엔드 선택 (superpoint/orb)")
     parser.add_argument("--input", type=str, required=True, help="동영상 또는 이미지 시퀀스 경로")
-    parser.add_argument("--weights", type=str, required=True, help="SuperPoint 가중치 경로")
+    parser.add_argument("--weights", type=str, default=None, help="SuperPoint 가중치 경로")
     parser.add_argument("--resize", nargs=2, type=int, default=[640, 480], 
                         help="입력 리사이즈 [width height]")
     parser.add_argument("--slam_conf_thresh", type=float, default=0.0005, 
@@ -97,6 +100,10 @@ def build_parser():
                         help="SuperPoint 입력 이미지 축소 비율 (0.5면 4배 빨라짐, 기본: 0.5)")
     parser.add_argument("--sp_interval", type=int, default=2,
                         help="SuperPoint 추론 주기 (n프레임마다 실행, 기본: 2)")
+    parser.add_argument("--orb_nfeatures", type=int, default=1500,
+                        help="ORB 3D에서 사용할 특징점 개수")
+    parser.add_argument("--orb_max_matches", type=int, default=500,
+                        help="ORB 3D에서 프레임당 최대 매칭 수")
     parser.add_argument("--deterministic", action=argparse.BooleanOptionalAction, default=False,
                         help="재현성 모드(고정 seed + deterministic 연산) 활성화")
     parser.add_argument("--seed", type=int, default=7,
@@ -213,32 +220,52 @@ def run_orb_slam(opt):
 
 
 def run_3d_slam(opt):
-    """SuperPoint 3D SLAM 실행 (포인트 클라우드 시각화)"""
-    out_dir = get_next_subdir(opt.output_dir, "superpoint_3d")
-    
-    print(f"\n{'='*80}")
-    print(f"🎬 SuperPoint 3D SLAM 시작")
-    print(f"{'='*80}")
-    print(f"📁 입력: {opt.input}")
-    print(f"📁 출력: {out_dir}")
-    print(f"{'='*80}\n")
-    
-    slam = VisualSLAM3D(
-        weights_path=opt.weights,
-        input_path=opt.input,
-        nn_thresh=opt.nn_thresh,
-        conf_thresh=opt.slam_conf_thresh,
-        nms_dist=opt.slam_nms_dist,
-        max_kpts=opt.max_kpts,
-        sp_scale=opt.sp_scale,
-        sp_interval=opt.sp_interval,
-        sp_fp16=opt.sp_fp16,
-        output_dir=str(out_dir),
-        roi_sky=opt.roi_sky,
-        roi_hood=opt.roi_hood
-    )
-    
-    slam.process()
+    """3D SLAM 실행 (SuperPoint 또는 ORB 백엔드)"""
+    if opt.backend == "orb":
+        out_dir = get_next_subdir(opt.output_dir, "orb_3d")
+
+        print(f"\n{'='*80}")
+        print(f"🎬 ORB 3D SLAM 시작")
+        print(f"{'='*80}")
+        print(f"📁 입력: {opt.input}")
+        print(f"📁 출력: {out_dir}")
+        print(f"{'='*80}\n")
+
+        slam = ORBSLAM3D(
+            input_path=opt.input,
+            resize=tuple(opt.resize),
+            nfeatures=opt.orb_nfeatures,
+            max_matches=opt.orb_max_matches,
+            output_dir=str(out_dir),
+            show_display=opt.show_display,
+        )
+        slam.process()
+    else:
+        out_dir = get_next_subdir(opt.output_dir, "superpoint_3d")
+
+        print(f"\n{'='*80}")
+        print(f"🎬 SuperPoint 3D SLAM 시작")
+        print(f"{'='*80}")
+        print(f"📁 입력: {opt.input}")
+        print(f"📁 출력: {out_dir}")
+        print(f"{'='*80}\n")
+
+        slam = VisualSLAM3D(
+            weights_path=opt.weights,
+            input_path=opt.input,
+            nn_thresh=opt.nn_thresh,
+            conf_thresh=opt.slam_conf_thresh,
+            nms_dist=opt.slam_nms_dist,
+            max_kpts=opt.max_kpts,
+            sp_scale=opt.sp_scale,
+            sp_interval=opt.sp_interval,
+            sp_fp16=opt.sp_fp16,
+            output_dir=str(out_dir),
+            roi_sky=opt.roi_sky,
+            roi_hood=opt.roi_hood
+        )
+        
+        slam.process()
     
     print(f"\n{'='*80}")
     print(f"✅ 3D 포인트 클라우드 및 2D 비교 맵이 생성되었습니다!")
@@ -249,7 +276,15 @@ def run_3d_slam(opt):
 
 
 def main():
-    opt = build_parser().parse_args()
+    parser = build_parser()
+    opt = parser.parse_args()
+
+    needs_superpoint_weights = (
+        opt.mode in ("slam", "compare")
+        or (opt.mode == "3d" and opt.backend == "superpoint")
+    )
+    if needs_superpoint_weights and not opt.weights:
+        parser.error("--weights 는 SuperPoint 모드(slam/compare/3d --backend superpoint)에서 필수입니다.")
     
     if opt.mode == "slam":
         # SuperPoint 2D만 실행
