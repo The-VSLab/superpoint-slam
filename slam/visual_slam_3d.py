@@ -3,7 +3,6 @@ import numpy as np
 import cv2
 import torch
 import open3d as o3d
-import g2opy as g2o 
 import os
 import time
 import sys
@@ -11,7 +10,6 @@ import sys
 # 기존 모듈
 from frontend.superpoint_frontend import SuperPointFrontend
 from matcher_module import BTMatcher
-from slam.loop_closure import LoopClosureManager
 from tracking.point_filter import PointFilter
 
 # --- 환경별 장치 자동 설정 함수 추가 ---
@@ -121,14 +119,6 @@ class VisualSLAM3D:
             mutual=True,
             ratio_thresh=0.85
         )
-        self.loop_closure = LoopClosureManager(
-            matcher=self.matcher,
-            K=self.K,
-            min_frame_gap=30,
-            top_k=5,
-            min_inliers=30,
-            min_inlier_ratio=0.25,
-        )
 
         self.prev_frame = None
         self.prev_kpts = None
@@ -149,9 +139,6 @@ class VisualSLAM3D:
         self.traj_points = []
         self.last_t_vec = np.array([0.0, 0.0, 1.0]) 
         
-        # g2o Sim3 Pose Graph 최적화기 설정
-        self.g2o_optimizer = None
-        self.g2o_edges = []
         self.jetson_scale = jetson_scale
 
         self.save_dir = str(output_dir)
@@ -514,97 +501,6 @@ class VisualSLAM3D:
         self.keyframe_indices.append(frame_idx)
         self.keyframe_local_pts.append([])  # 이 키프레임에 등록될 로컬 3D 포인트들
         self.keyframe_original_poses.append(self.cur_pose.copy())
-
-        node_idx = len(self.keyframes) - 1
-
-        if node_idx > 0 and T_rel is not None:
-            self.g2o_edges.append({
-                'type': 'odom',
-                'from': node_idx - 1,
-                'to': node_idx,
-                'transform': T_rel.copy(),
-                'scale': 1.0,
-                'information_scale': 1.0,
-            })
-
-        self.loop_closure.add_keyframe(frame_idx, kpts, desc, pts_3d)
-        loop = self.loop_closure.find_loop(frame_idx, kpts, desc)
-        if loop is not None:
-            # Sim3에서는 스케일 정보를 보존하여 전달 (정규화 없음!)
-            scale = loop.scale
-            print(f"  [Pose Graph] g2o Sim3 Edge: Scale={scale:.3f} (정규화 없이 보존)")
-            
-            # 루프 클로저 엣지 저장
-            self.g2o_edges.append({
-                'type': 'loop',
-                'from': loop.match_index,
-                'to': node_idx,
-                'transform': loop.transform,
-                'scale': scale,
-                'information_scale': 1.0,  # 루프 엣지는 본 체인에서 특수 처리
-            })
-            self.optimize_pose_graph()
-
-    def _build_g2o_optimizer(self):
-        """g2o Sim3 Pose Graph 최적화기 구축"""
-        optimizer = g2o.SparseOptimizer()
-        solver = g2o.BlockSolverSE3(g2o.LinearSolverDenseSE3())
-        algorithm = g2o.OptimizationAlgorithmLevenberg(solver)
-        optimizer.set_algorithm(algorithm)
-        return optimizer
-
-    def optimize_pose_graph(self):
-        if len(self.keyframes) < 2:
-            return
-
-        optimizer = self._build_g2o_optimizer()
-
-        # 1. 노드 추가 (SE3 vertex)
-        for i, pose in enumerate(self.keyframes):
-            v = g2o.VertexSE3()
-            v.set_id(i)
-            v.set_estimate(g2o.Isometry3d(pose))
-            if i == 0:
-                v.set_fixed(True)  # 첫 번째 키프레임 고정
-            optimizer.add_vertex(v)
-
-        # 2. 엣지 추가
-        for edge_info in self.g2o_edges:
-            e = g2o.EdgeSE3()
-            e.set_vertex(0, optimizer.vertex(edge_info['from']))
-            e.set_vertex(1, optimizer.vertex(edge_info['to']))
-            
-            transform = edge_info['transform'].copy()
-            
-            if edge_info['type'] == 'loop':
-                # PnP 기반 루프 엣지: PnP가 돌려준 스케일(거리) 정보를 그대로 보존해야
-                # g2o가 전체 Odometry 궤적의 스케일 드리프트를 펴줄 수 있습니다.
-                
-                # 비등방 Information Matrix:
-                # - 회전(0-2): 높은 신뢰도 (방향 보정에 탁월)
-                # - 병진(3-5): PnP inlier 품질 향상(15개 이상)에 따라 병진 신뢰도도 어느정도 반영
-                info = np.eye(6)
-                info[0, 0] = info[1, 1] = info[2, 2] = 10.0  # 회전 강하게
-                info[3, 3] = info[4, 4] = info[5, 5] = 1.0   # 병진도 정상 반영
-            else:
-                # 오도메트리 엣지: 등방 Information Matrix
-                info = np.eye(6) * edge_info['information_scale']
-            
-            e.set_measurement(g2o.Isometry3d(transform))
-            e.set_information(info)
-            optimizer.add_edge(e)
-
-        # 3. 최적화 실행
-        optimizer.initialize_optimization()
-        optimizer.optimize(20)
-
-        # 4. 결과 추출 → 키프레임 포즈 갱신
-        for i in range(len(self.keyframes)):
-            v = optimizer.vertex(i)
-            if v is not None:
-                self.keyframes[i] = v.estimate().matrix().copy()
-        
-        self.cur_pose = self.keyframes[-1].copy()
 
     def print_perf_summary(self):
         if not self.total_ms_list:
