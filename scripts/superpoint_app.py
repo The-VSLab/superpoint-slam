@@ -93,6 +93,10 @@ def build_parser():
                         help="균일 분포용 그리드 [gx gy]")
     parser.add_argument("--sp_fp16", action=argparse.BooleanOptionalAction, default=False,
                         help="FP16 추론 활성화 (CUDA 전용)")
+    parser.add_argument("--sp_scale", type=float, default=0.5,
+                        help="SuperPoint 입력 이미지 축소 비율 (0.5면 4배 빨라짐, 기본: 0.5)")
+    parser.add_argument("--sp_interval", type=int, default=2,
+                        help="SuperPoint 추론 주기 (n프레임마다 실행, 기본: 2)")
     parser.add_argument("--deterministic", action=argparse.BooleanOptionalAction, default=False,
                         help="재현성 모드(고정 seed + deterministic 연산) 활성화")
     parser.add_argument("--seed", type=int, default=7,
@@ -223,9 +227,12 @@ def run_3d_slam(opt):
         weights_path=opt.weights,
         input_path=opt.input,
         nn_thresh=opt.nn_thresh,
-        sp_scale=1.0,
-        sp_interval=1,
-        sp_fp16=False,
+        conf_thresh=opt.slam_conf_thresh,
+        nms_dist=opt.slam_nms_dist,
+        max_kpts=opt.max_kpts,
+        sp_scale=opt.sp_scale,
+        sp_interval=opt.sp_interval,
+        sp_fp16=opt.sp_fp16,
         output_dir=str(out_dir),
         roi_sky=opt.roi_sky,
         roi_hood=opt.roi_hood

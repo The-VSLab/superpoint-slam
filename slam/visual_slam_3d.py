@@ -3,7 +3,7 @@ import numpy as np
 import cv2
 import torch
 import open3d as o3d
-import g2o
+import g2opy as g2o 
 import os
 import time
 import sys
@@ -63,6 +63,8 @@ class VisualSLAM3D:
         input_path,
         nn_thresh=0.7,
         conf_thresh=0.003,
+        nms_dist=4,
+        max_kpts=1000,
         jetson_scale=None,
         sp_scale=1.0,
         sp_interval=1,
@@ -105,9 +107,10 @@ class VisualSLAM3D:
         # descriptor_dim=128로 테스트 후 안정적일 때 head_hidden 256-> 128로 전환예정
         self.fe = SuperPointFrontend(
             weights_path=weights_path,
-            nms_dist=4,
+            nms_dist=nms_dist,
             conf_thresh=conf_thresh,
             nn_thresh=nn_thresh,
+            max_keypoints=max_kpts,
             cuda=self.use_cuda,
             roi_sky=roi_sky,
             roi_hood=roi_hood
