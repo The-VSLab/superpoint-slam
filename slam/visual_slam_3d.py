@@ -62,7 +62,7 @@ class VisualSLAM3D:
         weights_path,
         input_path,
         nn_thresh=0.7,
-        conf_thresh=0.003,
+        conf_thresh=0.015,
         jetson_scale=None,
         sp_scale=1.0,
         sp_interval=1,
@@ -70,7 +70,8 @@ class VisualSLAM3D:
         highway_mode=False,
         output_dir="path_final",
         roi_sky=0.35,
-        roi_hood=0.85
+        roi_hood=0.85,
+        resize=None
     ):
         # 1. 장치 결정
         self.highway_mode = highway_mode
@@ -84,8 +85,31 @@ class VisualSLAM3D:
         
         cap = cv2.VideoCapture(input_path)
         if not cap.isOpened(): raise ValueError(f"Error: {input_path}")
-        self.W, self.H = 640, 480
+        
+        # 원본 영상 해상도 읽기
+        orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         cap.release()
+        
+        if resize is not None:
+            # 사용자 지정 해상도 사용 (8의 배수로 반올림)
+            self.W = (resize[0] // 8) * 8
+            self.H = (resize[1] // 8) * 8
+        else:
+            # 종횡비 유지하면서 장축 기준 640으로 자동 리사이즈 (8의 배수)
+            target_long = 640
+            if orig_w >= orig_h:
+                scale_factor = target_long / orig_w
+            else:
+                scale_factor = target_long / orig_h
+            self.W = (int(orig_w * scale_factor) // 8) * 8
+            self.H = (int(orig_h * scale_factor) // 8) * 8
+        
+        # 최소 크기 보장
+        self.W = max(self.W, 64)
+        self.H = max(self.H, 64)
+        
+        print(f"==> Original: {orig_w}x{orig_h} → Resized: {self.W}x{self.H} (aspect preserved, 8x aligned)")
         
         self.sp_scale = float(sp_scale)
         self.sp_interval = max(int(sp_interval), 1)
@@ -130,7 +154,8 @@ class VisualSLAM3D:
         self.prev_frame = None
         self.prev_kpts = None
         self.prev_desc = None
-        self.prev_3d_pts = None # Initialize prev_3d_pts
+        self.prev_3d_pts = None # Initialize prev_3d_pts (로컬 좌표 - 프레임간 트래킹용)
+        self.prev_3d_pts_world = None # 월드 좌표 (루프 클로저용)
         self.cur_pose = np.eye(4)
         
         # 포인트 필터 (하늘/구름 제거)
@@ -263,6 +288,7 @@ class VisualSLAM3D:
             if self.prev_frame is None:
                 self.prev_frame, self.prev_kpts, self.prev_desc = img_gray, kpts, desc
                 self.prev_3d_pts = np.full((len(kpts), 3), np.nan)
+                self.prev_3d_pts_world = np.full((len(kpts), 3), np.nan)
                 # 첫 프레임 키프레임 추가
                 self.traj_points.append([0,0,0])
                 self.add_keyframe(frame_idx, kpts, desc)
@@ -271,6 +297,7 @@ class VisualSLAM3D:
 
             max_pts = max(len(kpts), len(self.prev_kpts) if self.prev_kpts is not None else 0)
             curr_3d_pts = np.full((max_pts, 3), np.nan)
+            curr_3d_pts_world = np.full((max_pts, 3), np.nan)  # 월드 좌표 병렬 추적
 
             # Matcher 시간 측정
             match_t0 = time.perf_counter()
@@ -298,16 +325,18 @@ class VisualSLAM3D:
                 p1 = flow_p1.astype(np.float64)
                 p2 = flow_p2.astype(np.float64)
                 p1_3d = self.prev_3d_pts[p1_idx]
-                # Inherit 3D points
+                # Inherit 3D points (로컬 + 월드 동시 상속)
                 curr_3d_pts[p2_idx] = p1_3d
+                curr_3d_pts_world[p2_idx] = self.prev_3d_pts_world[p1_idx]
             elif len(matches) > 8:
                 p1_idx = matches[:, 0]
                 p2_idx = matches[:, 1]
                 p1 = self.prev_kpts[p1_idx, :2].astype(np.float64)
                 p2 = kpts[p2_idx, :2].astype(np.float64)
                 p1_3d = self.prev_3d_pts[p1_idx]
-                # Inherit 3D points
+                # Inherit 3D points (로컬 + 월드 동시 상속)
                 curr_3d_pts[p2_idx] = p1_3d
+                curr_3d_pts_world[p2_idx] = self.prev_3d_pts_world[p1_idx]
             else:
                 p1 = None
                 p2 = None
@@ -430,6 +459,10 @@ class VisualSLAM3D:
                         # 삼각측량 된 점을 현재 3D 점 메모리에 등록 (Scale Propagation의 핵심)
                         curr_3d_pts[valid_indices] = local_pts
                         
+                        # 월드 좌표로 즉시 변환하여 병렬 저장 (루프 클로저용)
+                        world_pts_for_lc = (self.cur_pose[:3, :3] @ local_pts.T).T + self.cur_pose[:3, 3]
+                        curr_3d_pts_world[valid_indices] = world_pts_for_lc
+                        
                         if len(local_pts) > 0:
                             # 로컬 3D 포인트를 현재 키프레임에 등록 (재투영용)
                             if len(self.keyframe_local_pts) > 0:
@@ -459,7 +492,7 @@ class VisualSLAM3D:
             
             # 키프레임 저장 (영상처럼 드문드문 파란 카메라 표시)
             if frame_idx % keyframe_interval == 0:
-                self.add_keyframe(frame_idx, kpts, desc, curr_3d_pts, T_rel.copy())
+                self.add_keyframe(frame_idx, kpts, desc, curr_3d_pts_world, T_rel.copy())
 
             # 2D 뷰 표시
             img_vis = cv2.cvtColor(img_curr, cv2.COLOR_BGR2GRAY)
@@ -498,6 +531,7 @@ class VisualSLAM3D:
                     self.prev_kpts = flow_p2
             self.prev_frame = img_gray
             self.prev_3d_pts = curr_3d_pts
+            self.prev_3d_pts_world = curr_3d_pts_world
             frame_idx += 1
 
         print("\n==> Video Finished. Building Final Scene...")
@@ -524,6 +558,7 @@ class VisualSLAM3D:
                 'information_scale': 1.0,
             })
 
+        # pts_3d는 이미 월드 좌표계 (curr_3d_pts_world에서 전달됨)
         self.loop_closure.add_keyframe(frame_idx, kpts, desc, pts_3d)
         loop = self.loop_closure.find_loop(frame_idx, kpts, desc)
         if loop is not None:
@@ -619,6 +654,56 @@ class VisualSLAM3D:
         if self.jetson_scale is not None:
             jetson_fps = fps * self.jetson_scale
             print(f"==> Jetson Nano est. FPS: {jetson_fps:.2f} (scale={self.jetson_scale})")
+        
+        # ── 통계 JSON 저장 ──
+        import json
+        
+        # 모델 메모리 측정
+        model_params = sum(p.numel() for p in self.fe.net.parameters())
+        model_size_mb = sum(p.numel() * p.element_size() for p in self.fe.net.parameters()) / (1024 * 1024)
+        
+        # 맵 포인트 수
+        total_map_pts = sum(len(pts) for pts in self.all_map_points) if self.all_map_points else 0
+        
+        # Inlier ratio 통계
+        valid_ratios = [r for r in self.inlier_ratio_list if r > 0]
+        
+        stats = {
+            "latency": {
+                "avg_total_ms": round(avg_total, 2),
+                "avg_sp_ms": round(avg_sp, 2),
+                "avg_match_ms": round(avg_match, 2),
+                "fps": round(fps, 2),
+                "total_frames": len(self.total_ms_list),
+            },
+            "memory": {
+                "model_params_M": round(model_params / 1e6, 2),
+                "model_size_MB": round(model_size_mb, 2),
+                "map_points": total_map_pts,
+                "keyframes": len(self.keyframes),
+            },
+            "inlier_stats": {
+                "mean_ratio": round(float(np.mean(valid_ratios)), 3) if valid_ratios else 0,
+                "median_ratio": round(float(np.median(valid_ratios)), 3) if valid_ratios else 0,
+                "min_ratio": round(float(np.min(valid_ratios)), 3) if valid_ratios else 0,
+                "max_ratio": round(float(np.max(valid_ratios)), 3) if valid_ratios else 0,
+            },
+            "keypoint_stats": {
+                "mean_kpts": round(float(np.mean(self.kpts_list)), 0) if self.kpts_list else 0,
+                "min_kpts": int(np.min(self.kpts_list)) if self.kpts_list else 0,
+                "max_kpts": int(np.max(self.kpts_list)) if self.kpts_list else 0,
+            },
+        }
+        
+        stats_path = os.path.join(self.save_dir, "slam_stats.json")
+        with open(stats_path, 'w') as f:
+            json.dump(stats, f, indent=2, ensure_ascii=False)
+        
+        # 3D 궤적 저장 (ATE 평가용)
+        if self.traj_points:
+            traj_3d = np.array(self.traj_points)
+            np.savetxt(os.path.join(self.save_dir, "trajectory_xyz.txt"), traj_3d, fmt="%.4f")
+
 
     def visualize_final_result(self):
         # 1. 최적화된 Pose Graph로 포인트 클라우드 재구축

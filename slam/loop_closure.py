@@ -68,7 +68,6 @@ class LoopClosureManager:
         candidates = [c for c in candidates if c[0] > 0.97]
 
         for sim, cand_idx in candidates[: self.top_k]:
-            print(f"  [Loop Search] Testing Frame {self.keyframes[cand_idx]['frame_idx']} (sim: {sim:.3f})...")
             result = self._verify_candidate(cand_idx, kpts, desc)
             if result is not None:
                 return result
@@ -103,11 +102,6 @@ class LoopClosureManager:
             img_pts_c = p2_2d[valid_3d_mask].astype(np.float32)
             
             if len(obj_pts_c) >= 15:
-                # [중요] OpenCV C++ 바인딩 오류 방지를 위해 명시적 형태 정의
-                # obj_pts_c = np.ascontiguousarray(obj_pts).reshape(-1, 1, 3) # Already done above
-                # img_pts_c = np.ascontiguousarray(img_pts).reshape(-1, 1, 2) # Already done above
-                
-                # print(f"  [Loop PnP Debug] Valid 3D points: {len(obj_pts_c)}")
                 
                 dist_coeffs = np.zeros(4, dtype=np.float32)
                 
@@ -142,9 +136,9 @@ class LoopClosureManager:
                             scale=scale,
                         )
                     else:
-                        print(f"  [Loop PnP Debug] Rejected by Thresholds: inliers={inliers}/5, ratio={inlier_ratio:.2f}/0.01")
+                        pass  # 임계값 미달 - 조용히 기각
                 else:
-                    print(f"  [Loop PnP Debug] solvePnPRansac failed mathematically. success={success}")
+                    pass  # PnP 수학적 실패 - 조용히 기각
         
         # 3D 맵포인트가 불충분하거나 PnP가 실패한 경우, 스케일이 없는 Essential Matrix로는 
         # 올바른 루프 클로저(SE3) 엣지를 생성할 수 없으므로 루프를 기각합니다.

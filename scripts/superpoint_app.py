@@ -41,9 +41,9 @@ def build_parser():
                         help="slam: SuperPoint 2D | compare: SuperPoint vs ORB | 3d: 3D 포인트 클라우드")
     parser.add_argument("--input", type=str, required=True, help="동영상 또는 이미지 시퀀스 경로")
     parser.add_argument("--weights", type=str, required=True, help="SuperPoint 가중치 경로")
-    parser.add_argument("--resize", nargs=2, type=int, default=[640, 480], 
-                        help="입력 리사이즈 [width height]")
-    parser.add_argument("--slam_conf_thresh", type=float, default=0.0005, 
+    parser.add_argument("--resize", nargs=2, type=int, default=None, 
+                        help="입력 리사이즈 [width height] (미지정 시 종횡비 유지 자동 리사이즈)")
+    parser.add_argument("--slam_conf_thresh", type=float, default=0.015, 
                         help="특징점 신뢰도 임계값 (낮을수록 특징점 증가)")
     parser.add_argument("--slam_nms_dist", type=int, default=3, help="NMS 거리")
     parser.add_argument("--nn_thresh", type=float, default=0.7, help="매칭 임계값")
@@ -228,7 +228,8 @@ def run_3d_slam(opt):
         sp_fp16=False,
         output_dir=str(out_dir),
         roi_sky=opt.roi_sky,
-        roi_hood=opt.roi_hood
+        roi_hood=opt.roi_hood,
+        resize=opt.resize
     )
     
     slam.process()
