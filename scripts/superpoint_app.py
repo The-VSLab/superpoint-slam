@@ -43,9 +43,9 @@ def build_parser():
     parser.add_argument("--weights", type=str, required=True, help="SuperPoint 가중치 경로")
     parser.add_argument("--resize", nargs=2, type=int, default=[640, 480], 
                         help="입력 리사이즈 [width height]")
-    parser.add_argument("--slam_conf_thresh", type=float, default=0.001, 
+    parser.add_argument("--slam_conf_thresh", type=float, default=0.0005, 
                         help="특징점 신뢰도 임계값 (낮을수록 특징점 증가)")
-    parser.add_argument("--slam_nms_dist", type=int, default=4, help="NMS 거리")
+    parser.add_argument("--slam_nms_dist", type=int, default=3, help="NMS 거리")
     parser.add_argument("--nn_thresh", type=float, default=0.7, help="매칭 임계값")
     parser.add_argument("--max_kpts", type=int, default=1500, help="프레임당 최대 특징점 개수(기본: 1500)")
     parser.add_argument("--min_kpts", type=int, default=600, help="프레임당 최소 특징점 개수(기본: 600)")
@@ -58,7 +58,13 @@ def build_parser():
     parser.add_argument("--use_shadow_filter", action=argparse.BooleanOptionalAction, default=True,
                         help="그림자 기반 특징점 필터 활성화")
     parser.add_argument("--use_top_region_filter", action=argparse.BooleanOptionalAction, default=True,
-                        help="영상 상단 영역(하늘) 특징점 억제 필터 활성화")
+                        help="최상단 20% 강제 특징점 제거 필터 활성화(기본: True)")
+    
+    # ROI 강제 마스킹 설정 (자율주행 환경 특화)
+    parser.add_argument("--roi_sky", type=float, default=0.35,
+                        help="하늘 마스킹 영역(상단 비율, 0.0이면 비활성화, 기본: 0.35)")
+    parser.add_argument("--roi_hood", type=float, default=0.85,
+                        help="본넷 마스킹 영역(하단 비율, 1.0이면 비활성화, 기본: 0.85)")
     parser.add_argument("--shadow_value_thresh", type=float, default=0.46,
                         help="그림자 명도 임계값(낮을수록 더 어두운 영역만 제거)")
     parser.add_argument("--shadow_saturation_thresh", type=float, default=0.30,
@@ -87,6 +93,10 @@ def build_parser():
                         help="균일 분포용 그리드 [gx gy]")
     parser.add_argument("--sp_fp16", action=argparse.BooleanOptionalAction, default=False,
                         help="FP16 추론 활성화 (CUDA 전용)")
+    parser.add_argument("--sp_scale", type=float, default=0.5,
+                        help="SuperPoint 입력 이미지 축소 비율 (0.5면 4배 빨라짐, 기본: 0.5)")
+    parser.add_argument("--sp_interval", type=int, default=2,
+                        help="SuperPoint 추론 주기 (n프레임마다 실행, 기본: 2)")
     parser.add_argument("--deterministic", action=argparse.BooleanOptionalAction, default=False,
                         help="재현성 모드(고정 seed + deterministic 연산) 활성화")
     parser.add_argument("--seed", type=int, default=7,
@@ -204,27 +214,37 @@ def run_orb_slam(opt):
 
 def run_3d_slam(opt):
     """SuperPoint 3D SLAM 실행 (포인트 클라우드 시각화)"""
+    out_dir = get_next_subdir(opt.output_dir, "superpoint_3d")
+    
     print(f"\n{'='*80}")
     print(f"🎬 SuperPoint 3D SLAM 시작")
     print(f"{'='*80}")
     print(f"📁 입력: {opt.input}")
+    print(f"📁 출력: {out_dir}")
     print(f"{'='*80}\n")
     
     slam = VisualSLAM3D(
         weights_path=opt.weights,
         input_path=opt.input,
         nn_thresh=opt.nn_thresh,
-        sp_scale=1.0,
-        sp_interval=1,
-        sp_fp16=False,
+        conf_thresh=opt.slam_conf_thresh,
+        nms_dist=opt.slam_nms_dist,
+        max_kpts=opt.max_kpts,
+        sp_scale=opt.sp_scale,
+        sp_interval=opt.sp_interval,
+        sp_fp16=opt.sp_fp16,
+        output_dir=str(out_dir),
+        roi_sky=opt.roi_sky,
+        roi_hood=opt.roi_hood
     )
     
     slam.process()
     
     print(f"\n{'='*80}")
-    print(f"✅ 3D 포인트 클라우드가 생성 및 표시되었습니다!")
+    print(f"✅ 3D 포인트 클라우드 및 2D 비교 맵이 생성되었습니다!")
     print(f"{'='*80}")
-    print(f"💾 저장위치: path_final/final_slam_map.ply")
+    print(f"💾 포인트 클라우드: {out_dir}/final_slam_map.ply")
+    print(f"💾 Top-Down 맵: {out_dir}/topdown_map.png")
     print(f"{'='*80}\n")
 
 
