@@ -100,6 +100,8 @@ def build_parser():
     parser.add_argument("--output_dir", type=str, default="result", help="출력 루트 디렉토리")
     parser.add_argument("--show_display", action=argparse.BooleanOptionalAction, default=True,
                         help="실시간 화면 표시 (기본: 활성화, --no-show_display로 비활성화)")
+    parser.add_argument("--use_semantic", action=argparse.BooleanOptionalAction, default=False,
+                        help="YOLOv8 기반 동적 객체(차량, 보행자 등) 마스킹 활성화 (3D SLAM 전용)")
     
     return parser
 
@@ -218,17 +220,18 @@ def run_3d_slam(opt):
     print(f"📁 입력: {opt.input}")
     print(f"📁 출력: {out_dir}")
     print(f"{'='*80}\n")
-    
     slam = VisualSLAM3D(
         weights_path=opt.weights,
         input_path=opt.input,
         nn_thresh=opt.nn_thresh,
+        conf_thresh=opt.slam_conf_thresh,
         sp_scale=1.0,
         sp_interval=1,
-        sp_fp16=False,
+        sp_fp16=opt.sp_fp16,
         output_dir=str(out_dir),
         roi_sky=opt.roi_sky,
         roi_hood=opt.roi_hood,
+        use_semantic=opt.use_semantic,
         resize=opt.resize
     )
     

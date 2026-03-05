@@ -19,6 +19,7 @@ import json
 import sys
 import os
 import numpy as np
+import pandas as pd
 from pathlib import Path
 
 
@@ -200,6 +201,77 @@ def print_report(result_dir, ate_result=None, stats=None):
         print("  최신 버전으로 SLAM을 다시 실행하면 자동으로 생성됩니다.\n")
     
     print(f"{'='*70}\n")
+    
+    # 엑셀 저장을 위한 딕셔너리 생성
+    report_dict = {
+        "Directory": os.path.basename(result_dir)
+    }
+    
+    if ate_result:
+        report_dict.update({
+            "ATE RMSE (m)": ate_result['ATE_RMSE_m'],
+            "ATE Mean (m)": ate_result['ATE_Mean_m'],
+            "ATE Median (m)": ate_result['ATE_Median_m'],
+            "ATE Max (m)": ate_result['ATE_Max_m'],
+            "Compared Poses": ate_result['num_poses_compared']
+        })
+        
+    if stats:
+        if 'latency' in stats:
+            lat = stats['latency']
+            report_dict.update({
+                "FPS": lat['fps'],
+                "Avg Total (ms)": lat['avg_total_ms'],
+                "Avg SuperPoint (ms)": lat['avg_sp_ms'],
+                "Avg Matching (ms)": lat['avg_match_ms'],
+                "Total Frames": lat['total_frames']
+            })
+            
+        if 'memory' in stats:
+            mem = stats['memory']
+            report_dict.update({
+                "Model Params (M)": mem['model_params_M'],
+                "Model Size (MB)": mem['model_size_MB'],
+                "Map Points": mem['map_points'],
+                "Keyframes": mem['keyframes']
+            })
+            
+        if 'inlier_stats' in stats:
+            inl = stats['inlier_stats']
+            report_dict.update({
+                "Inlier Mean": inl['mean_ratio'],
+                "Inlier Min": inl['min_ratio'],
+                "Inlier Max": inl['max_ratio']
+            })
+            
+        if 'keypoint_stats' in stats:
+            kp = stats['keypoint_stats']
+            report_dict.update({
+                "Kpts Mean": kp['mean_kpts'],
+                "Kpts Min": kp['min_kpts'],
+                "Kpts Max": kp['max_kpts']
+            })
+            
+    return report_dict
+
+
+def save_to_csv(report_dict, output_path):
+    """결과 딕셔너리를 CSV 파일로 저장 (누적 저장 지원)"""
+    df_new = pd.DataFrame([report_dict])
+    
+    try:
+        if os.path.exists(output_path):
+            df_existing = pd.read_csv(output_path)
+            df_combined = pd.concat([df_existing, df_new], ignore_index=True)
+            # 중복 실행 방지 (동일 디렉토리명을 가진 가장 최신 행 덮어쓰기)
+            df_combined = df_combined.drop_duplicates(subset=['Directory'], keep='last')
+            df_combined.to_csv(output_path, index=False)
+            print(f"  💾 CSV 파일이 업데이트 되었습니다: {output_path}")
+        else:
+            df_new.to_csv(output_path, index=False)
+            print(f"  💾 CSV 파일이 새로 생성되었습니다: {output_path}")
+    except Exception as e:
+        print(f"  ⚠️ CSV 저장 실패: {e}")
 
 
 def main():
@@ -208,6 +280,8 @@ def main():
                         help="SLAM 결과 디렉토리 (예: result/superpoint_3d_36)")
     parser.add_argument("--gt", type=str, default=None,
                         help="Ground Truth 포즈 파일 (KITTI 형식, 예: poses/00.txt)")
+    parser.add_argument("--csv", type=str, default=None,
+                        help="결과를 누적 저장할 CSV 파일 경로 (예: VSLab_Performance.csv)")
     opt = parser.parse_args()
     
     # 통계 로드
@@ -223,8 +297,16 @@ def main():
         except Exception as e:
             print(f"  ⚠️ ATE 계산 실패: {e}")
     
-    # 보고서 출력
-    print_report(opt.result, ate_result, stats)
+    # 보고서 터미널 출력 및 딕셔너리 반환
+    report_dict = print_report(opt.result, ate_result, stats)
+    
+    # CSV 저장
+    if opt.csv:
+        save_to_csv(report_dict, opt.csv)
+    else:
+        # 기본 파일명으로 result 디렉토리 안에 생성
+        default_csv_path = os.path.join(opt.result, "performance_report.csv")
+        save_to_csv(report_dict, default_csv_path)
 
 
 if __name__ == "__main__":
