@@ -64,9 +64,29 @@ class VisualSLAM2D:
     ):
         self.weights_path = str(weights_path)
         self.input_path = str(input_path)
+        
+        cap = cv2.VideoCapture(self.input_path)
+        if not cap.isOpened(): raise ValueError(f"Error: {self.input_path}")
+        orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        cap.release()
+
+        if resize is not None:
+            self.width = (int(resize[0]) // 8) * 8
+            self.height = (int(resize[1]) // 8) * 8
+        else:
+            target_long = 640
+            if orig_w >= orig_h:
+                scale_factor = target_long / float(orig_w)
+            else:
+                scale_factor = target_long / float(orig_h)
+            self.width = (int(orig_w * scale_factor) // 8) * 8
+            self.height = (int(orig_h * scale_factor) // 8) * 8
+
+        self.width = max(self.width, 64)
+        self.height = max(self.height, 64)
+        print(f"==> VisualSLAM2D Resolution: {orig_w}x{orig_h} -> {self.width}x{self.height}")
         self.nn_thresh = float(nn_thresh)
-        self.width = int(resize[0])
-        self.height = int(resize[1])
         self.conf_thresh = float(conf_thresh)
         self.nms_dist = int(nms_dist)
         self.mask_car = bool(mask_car)
@@ -448,8 +468,8 @@ class VisualSLAM2D:
             fe_t0 = time.perf_counter()
             if run_infer:
                 if self.sp_scale != 1.0:
-                    sw = max(int(self.width * self.sp_scale), 64)
-                    sh = max(int(self.height * self.sp_scale), 64)
+                    sw = max((int(self.width * self.sp_scale) // 8) * 8, 64)
+                    sh = max((int(self.height * self.sp_scale) // 8) * 8, 64)
                     sp_input = cv2.resize(masked, (sw, sh), interpolation=cv2.INTER_AREA)
                 else:
                     sp_input = masked

@@ -267,6 +267,107 @@ class PointFilter:
                     valid[idx] = False
 
         return valid
+
+    def filter_shadow_and_top_combined(
+        self,
+        frame: np.ndarray,
+        kpts: np.ndarray,
+        use_sky_filter: bool = True,
+        use_shadow_filter: bool = True,
+        use_top_region_filter: bool = True,
+        shadow_value_thresh: float = 0.46,
+        shadow_saturation_thresh: float = 0.30,
+        min_shadow_grad: float = 15.0,
+        min_shadow_local_std: float = 8.0,
+        shadow_rel_dark_thresh: float = 0.82,
+        top_region_ratio: float = 0.30,
+        top_region_min_grad: float = 25.0,
+        top_region_min_std: float = 10.0,
+        min_keypoints: int = 200,
+    ) -> np.ndarray:
+        """하늘 + 그림자 + 상단 영역 필터를 통합하여 중복 계산 제거 (성능 최적화).
+
+        Sobel, boxFilter, HSV 연산을 한 번만 수행하고 모든 필터에서 재사용합니다.
+        """
+        if len(kpts) == 0:
+            return np.array([], dtype=bool)
+
+        # 모든 필터가 비활성화된 경우 조기 반환
+        if not use_sky_filter and not use_shadow_filter and not use_top_region_filter:
+            return np.ones(len(kpts), dtype=bool)
+
+        # === 공통 계산: 그레이스케일 변환 및 구조적 특징 (한 번만 계산) ===
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+        gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+        grad = cv2.magnitude(gx, gy)
+
+        mean = cv2.boxFilter(gray, cv2.CV_32F, (7, 7), normalize=True)
+        sq_mean = cv2.boxFilter(gray * gray, cv2.CV_32F, (7, 7), normalize=True)
+        var = np.maximum(sq_mean - (mean * mean), 0.0)
+        local_std = np.sqrt(var)
+
+        # === HSV 계산 (하늘/그림자 필터에서 공유) ===
+        need_hsv = use_sky_filter or use_shadow_filter
+        if need_hsv:
+            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV).astype(np.float32)
+            h = hsv[:, :, 0] / 180.0
+            sat = hsv[:, :, 1] / 255.0
+            val = hsv[:, :, 2] / 255.0
+            if use_shadow_filter:
+                val_blur = cv2.GaussianBlur(val, (21, 21), 0)
+
+        # === 상단 영역 필터 전용 계산 ===
+        if use_top_region_filter:
+            y_cut = int(np.clip(self.frame_h * top_region_ratio, 0, self.frame_h - 1))
+
+        # === 벡터화된 특징점 필터링 ===
+        # 특징점 좌표를 정수 인덱스로 변환
+        kpts_int = kpts.astype(int)
+        xi = np.clip(kpts_int[:, 0], 0, self.frame_w - 1)
+        yi = np.clip(kpts_int[:, 1], 0, self.frame_h - 1)
+
+        valid = np.ones(len(kpts), dtype=bool)
+
+        # 하늘 필터 적용 (HSV 재사용)
+        if use_sky_filter:
+            is_blue = (h[yi, xi] >= 0.5) & (h[yi, xi] <= 0.75)
+            is_cloud = (sat[yi, xi] < 0.3) & (val[yi, xi] > 0.6)
+            sky_invalid = is_blue | is_cloud
+            valid &= ~sky_invalid
+
+        # 그림자 필터 적용
+        if use_shadow_filter:
+            rel_dark = val[yi, xi] / (val_blur[yi, xi] + 1e-6)
+            is_shadow_like = (
+                (val[yi, xi] < shadow_value_thresh) &
+                (sat[yi, xi] < shadow_saturation_thresh) &
+                (rel_dark < shadow_rel_dark_thresh)
+            )
+            # AND 로직: gradient와 local_std 모두 낮아야 약한 구조로 판정
+            is_weak_structure = (grad[yi, xi] < min_shadow_grad) & (local_std[yi, xi] < min_shadow_local_std)
+            shadow_invalid = is_shadow_like & is_weak_structure
+            valid &= ~shadow_invalid
+
+        # 상단 영역 필터 적용
+        if use_top_region_filter:
+            in_top_region = yi <= y_cut
+            strong_structure = (grad[yi, xi] >= top_region_min_grad) & (local_std[yi, xi] >= top_region_min_std)
+            top_invalid = in_top_region & ~strong_structure
+            valid &= ~top_invalid
+
+        # === 최소 키포인트 보존 안전장치 ===
+        remaining = np.count_nonzero(valid)
+        if remaining < min_keypoints and len(kpts) > remaining:
+            filtered_indices = np.where(~valid)[0]
+            if len(filtered_indices) > 0:
+                filtered_grads = grad[yi[filtered_indices], xi[filtered_indices]]
+                need = min_keypoints - remaining
+                rescue_count = min(need, len(filtered_indices))
+                top_k = np.argsort(filtered_grads)[::-1][:rescue_count]
+                valid[filtered_indices[top_k]] = True
+
+        return valid
     
     def apply_all_filters(self, frame: np.ndarray, kpts: np.ndarray, 
                          desc: np.ndarray = None,

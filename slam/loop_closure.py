@@ -135,10 +135,8 @@ class LoopClosureManager:
                             matches=int(matches.shape[0]),
                             scale=scale,
                         )
-                    else:
-                        pass  # 임계값 미달 - 조용히 기각
-                else:
-                    pass  # PnP 수학적 실패 - 조용히 기각
+                    # else: 임계값 미달 - 조용히 기각
+                # else: PnP 수학적 실패 - 조용히 기각
         
         # 3D 맵포인트가 불충분하거나 PnP가 실패한 경우, 스케일이 없는 Essential Matrix로는 
         # 올바른 루프 클로저(SE3) 엣지를 생성할 수 없으므로 루프를 기각합니다.

@@ -29,7 +29,6 @@ try:
 except ImportError:
     from models.superpoint_mobilenet import SuperPointNetV2
     from training.original_superpoint import SuperPoint
-    from training.original_superpoint import SuperPoint
 
 # --- [3] 핵심 유틸리티 함수 ---
 

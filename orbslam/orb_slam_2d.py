@@ -27,8 +27,28 @@ class ORBSLAM2D:
         show_display: bool = True,
     ):
         self.input_path = str(input_path)
-        self.width = int(resize[0])
-        self.height = int(resize[1])
+        
+        cap = cv2.VideoCapture(self.input_path)
+        if not cap.isOpened(): raise ValueError(f"Error: {self.input_path}")
+        orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        cap.release()
+
+        if resize is not None:
+            self.width = (int(resize[0]) // 8) * 8
+            self.height = (int(resize[1]) // 8) * 8
+        else:
+            target_long = 640
+            if orig_w >= orig_h:
+                scale_factor = target_long / float(orig_w)
+            else:
+                scale_factor = target_long / float(orig_h)
+            self.width = (int(orig_w * scale_factor) // 8) * 8
+            self.height = (int(orig_h * scale_factor) // 8) * 8
+
+        self.width = max(self.width, 64)
+        self.height = max(self.height, 64)
+        print(f"==> ORBSLAM2D Resolution: {orig_w}x{orig_h} -> {self.width}x{self.height}")
         self.nfeatures = int(nfeatures)
         self.max_matches = int(max_matches)
         self.motion_scale = float(motion_scale)

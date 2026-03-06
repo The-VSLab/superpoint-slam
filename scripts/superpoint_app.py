@@ -5,7 +5,6 @@ SuperPoint 2D SLAM 단독 앱
 - result/ 디렉토리에 자동 번호 매기기 (superpoint_01, orb_01, ...)
 """
 import argparse
-import json
 import sys
 from pathlib import Path
 
@@ -69,17 +68,17 @@ def build_parser():
                         help="그림자 명도 임계값(낮을수록 더 어두운 영역만 제거)")
     parser.add_argument("--shadow_saturation_thresh", type=float, default=0.30,
                         help="그림자 채도 임계값(낮을수록 무채색 그림자만 제거)")
-    parser.add_argument("--min_shadow_grad", type=float, default=22.0,
+    parser.add_argument("--min_shadow_grad", type=float, default=15.0,
                         help="그림자 영역 최소 그래디언트 임계값")
-    parser.add_argument("--min_shadow_local_std", type=float, default=10.0,
+    parser.add_argument("--min_shadow_local_std", type=float, default=8.0,
                         help="그림자 영역 최소 로컬 표준편차 임계값")
     parser.add_argument("--shadow_rel_dark_thresh", type=float, default=0.82,
                         help="주변 대비 상대 명도 임계값(낮을수록 그림자 판정 강화)")
-    parser.add_argument("--top_region_ratio", type=float, default=0.38,
+    parser.add_argument("--top_region_ratio", type=float, default=0.30,
                         help="상단 억제 영역 비율(0~1)")
-    parser.add_argument("--top_region_min_grad", type=float, default=34.0,
+    parser.add_argument("--top_region_min_grad", type=float, default=25.0,
                         help="상단 영역 유지용 최소 그래디언트")
-    parser.add_argument("--top_region_min_std", type=float, default=14.0,
+    parser.add_argument("--top_region_min_std", type=float, default=10.0,
                         help="상단 영역 유지용 최소 로컬 표준편차")
     parser.add_argument("--bottom_region_ratio", type=float, default=0.35,
                         help="바닥 영역 비율(0~1, 하혼 영역 높이 비율)")
@@ -102,7 +101,27 @@ def build_parser():
                         help="실시간 화면 표시 (기본: 활성화, --no-show_display로 비활성화)")
     parser.add_argument("--use_semantic", action=argparse.BooleanOptionalAction, default=False,
                         help="YOLOv8 기반 동적 객체(차량, 보행자 등) 마스킹 활성화 (3D SLAM 전용)")
-    
+
+    # === 성능 최적화 파라미터 (3D SLAM 전용) ===
+    parser.add_argument("--no-viz", action="store_true",
+                        help="실시간 2D 시각화 비활성화 (성능 향상: ~15-20ms)")
+    parser.add_argument("--sp-scale", type=float, default=1.0,
+                        help="SuperPoint 추론 해상도 스케일 (0.5 = 절반 해상도, 기본: 1.0)")
+    parser.add_argument("--sp-interval", type=int, default=1,
+                        help="SuperPoint 추론 간격 (프레임 단위, 기본: 1 = 매 프레임)")
+    parser.add_argument("--flow-win-size", type=int, default=21,
+                        help="Optical Flow 윈도우 크기 (기본: 21, 권장: 15)")
+    parser.add_argument("--flow-max-level", type=int, default=3,
+                        help="Optical Flow 피라미드 레벨 (기본: 3, 권장: 2)")
+    parser.add_argument("--flow-fb-thresh", type=float, default=1.0,
+                        help="Optical Flow Forward-Backward 일관성 임계값 (픽셀, 기본: 1.0)")
+    parser.add_argument("--no-clahe", action="store_true",
+                        help="CLAHE 전처리 비활성화 (성능 향상: ~3-5ms)")
+    parser.add_argument("--local-map-limit", type=int, default=0,
+                        help="로컬 맵 트래킹 MapPoint 개수 제한 (0 = 무제한, 권장: 500)")
+    parser.add_argument("--filter-on-sp-only", action="store_true",
+                        help="필터를 SuperPoint 추론 프레임에만 적용 (optical flow 프레임은 스킵)")
+
     return parser
 
 
@@ -133,7 +152,7 @@ def run_superpoint_slam(opt):
         weights_path=opt.weights,
         input_path=opt.input,
         nn_thresh=opt.nn_thresh,
-        resize=tuple(opt.resize),
+        resize=tuple(opt.resize) if opt.resize is not None else None,
         conf_thresh=opt.slam_conf_thresh,
         nms_dist=opt.slam_nms_dist,
         max_kpts=opt.max_kpts,
@@ -188,7 +207,7 @@ def run_orb_slam(opt):
     
     orb = ORBSLAM2D(
         input_path=opt.input,
-        resize=tuple(opt.resize),
+        resize=tuple(opt.resize) if opt.resize is not None else None,
         output_dir=str(out_dir),
         show_display=opt.show_display,
     )
@@ -225,14 +244,32 @@ def run_3d_slam(opt):
         input_path=opt.input,
         nn_thresh=opt.nn_thresh,
         conf_thresh=opt.slam_conf_thresh,
-        sp_scale=1.0,
-        sp_interval=1,
+        sp_scale=opt.sp_scale,
+        sp_interval=opt.sp_interval,
         sp_fp16=opt.sp_fp16,
         output_dir=str(out_dir),
         roi_sky=opt.roi_sky,
         roi_hood=opt.roi_hood,
         use_semantic=opt.use_semantic,
-        resize=opt.resize
+        resize=opt.resize,
+        use_shadow_filter=opt.use_shadow_filter,
+        use_top_region_filter=opt.use_top_region_filter,
+        shadow_value_thresh=opt.shadow_value_thresh,
+        shadow_saturation_thresh=opt.shadow_saturation_thresh,
+        min_shadow_grad=opt.min_shadow_grad,
+        min_shadow_local_std=opt.min_shadow_local_std,
+        shadow_rel_dark_thresh=opt.shadow_rel_dark_thresh,
+        top_region_ratio=opt.top_region_ratio,
+        top_region_min_grad=opt.top_region_min_grad,
+        top_region_min_std=opt.top_region_min_std,
+        # === 성능 최적화 파라미터 ===
+        enable_viz=not opt.no_viz,
+        flow_win_size=opt.flow_win_size,
+        flow_max_level=opt.flow_max_level,
+        flow_fb_thresh=opt.flow_fb_thresh,
+        use_clahe=not opt.no_clahe,
+        local_map_limit=opt.local_map_limit,
+        filter_on_sp_only=opt.filter_on_sp_only
     )
     
     slam.process()
