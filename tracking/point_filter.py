@@ -220,8 +220,9 @@ class PointFilter:
             is_shadow_like = (
                 (val[yi, xi] < shadow_value_thresh)
                 and (sat[yi, xi] < shadow_saturation_thresh)
-                and (rel_dark < shadow_rel_dark_thresh)
+                and ((rel_dark < shadow_rel_dark_thresh) or (val[yi, xi] < 0.15))
             )
+            # OR 로직: gradient나 local_std 중 하나라도 낮으면 약한 구조로 판정 (그림자 제거 강화)
             is_weak_structure = (grad[yi, xi] < min_shadow_grad) or (local_std[yi, xi] < min_shadow_local_std)
 
             if is_shadow_like and is_weak_structure:
@@ -342,10 +343,10 @@ class PointFilter:
             is_shadow_like = (
                 (val[yi, xi] < shadow_value_thresh) &
                 (sat[yi, xi] < shadow_saturation_thresh) &
-                (rel_dark < shadow_rel_dark_thresh)
+                ((rel_dark < shadow_rel_dark_thresh) | (val[yi, xi] < 0.15))
             )
-            # AND 로직: gradient와 local_std 모두 낮아야 약한 구조로 판정
-            is_weak_structure = (grad[yi, xi] < min_shadow_grad) & (local_std[yi, xi] < min_shadow_local_std)
+            # OR 로직: gradient나 local_std 중 하나라도 낮으면 약한 구조로 판정 (그림자 제거 강화)
+            is_weak_structure = (grad[yi, xi] < min_shadow_grad) | (local_std[yi, xi] < min_shadow_local_std)
             shadow_invalid = is_shadow_like & is_weak_structure
             valid &= ~shadow_invalid
 

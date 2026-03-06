@@ -592,7 +592,7 @@ class VisualSLAM3D:
                 if len(obj_pts) >= 15:
                     success, rvec, tvec_pnp, inliers_pnp = cv2.solvePnPRansac(
                         obj_pts, img_pts, self.K, None, 
-                        flags=cv2.SOLVEPNP_EPNP, reprojectionError=3.0
+                        flags=cv2.SOLVEPNP_ITERATIVE, reprojectionError=5.0
                     )
                     
                     if success and inliers_pnp is not None and len(inliers_pnp) > 10:
@@ -613,19 +613,32 @@ class VisualSLAM3D:
                         t_rel = T_rel_mat[:3, 3]
                         
                         tvec_len = np.linalg.norm(t_rel)
-                        # 필터: 프레임 간 이동량이므로 10.0m 이상 극단적 점프 방지 
+                        # 필터 1: 절대 상한 (10m 이상 극단적 점프 방지)
                         if 0.001 < tvec_len < 10.0:
-                            # [Fix 3] PnP 각도 일관성 체크 — 이전 방향과 120° 이상 반전이면 거부
-                            last_t_norm = np.linalg.norm(self.last_t_vec)
-                            if last_t_norm > 1e-4:
-                                cos_angle = np.dot(t_rel, self.last_t_vec) / (tvec_len * last_t_norm + 1e-8)
-                                if cos_angle < -0.5:  # 120° 이상 반전
-                                    print(f"frame {frame_idx}: [PnP REJECTED] direction reversal cos={cos_angle:.3f}")
-                                    pnp_success = False
+                            # 필터 2: 속도 기반 점프 감지 — 최근 이동 속도 대비 과도한 이동 거부
+                            speed_rejected = False
+                            if len(self.recent_speeds) >= 3:
+                                median_speed = np.median(self.recent_speeds[-10:])
+                                # 최근 속도 중앙값의 5배 초과 시 점프로 간주 (최소 임계값 0.5m)
+                                speed_thresh = max(median_speed * 5.0, 0.5)
+                                if tvec_len > speed_thresh:
+                                    print(f"frame {frame_idx}: [PnP REJECTED] speed jump {tvec_len:.3f}m > thresh {speed_thresh:.3f}m (median_speed={median_speed:.3f})")
+                                    speed_rejected = True
+
+                            if speed_rejected:
+                                pnp_success = False
+                            else:
+                                # [Fix 3] PnP 각도 일관성 체크 — 이전 방향과 120° 이상 반전이면 거부
+                                last_t_norm = np.linalg.norm(self.last_t_vec)
+                                if last_t_norm > 1e-4:
+                                    cos_angle = np.dot(t_rel, self.last_t_vec) / (tvec_len * last_t_norm + 1e-8)
+                                    if cos_angle < -0.5:  # 120° 이상 반전
+                                        print(f"frame {frame_idx}: [PnP REJECTED] direction reversal cos={cos_angle:.3f}")
+                                        pnp_success = False
+                                    else:
+                                        pnp_success = True
                                 else:
                                     pnp_success = True
-                            else:
-                                pnp_success = True
                             
                             if pnp_success:
                                 R = R_rel
@@ -729,7 +742,11 @@ class VisualSLAM3D:
                 
                 # 원본 이동 속도 보존 (X, Y 억제로 인한 스케일 축소 방지)
                 t_speed = np.linalg.norm(t_vec)
-                
+
+                # 삼각측량용 순수 R, t 보존 (댐핑 전)
+                R_orig = R.copy()
+                t_orig = t_vec.copy()
+
                 # 2. 횡이동(X축) 억제 (Turn이 작으면 X 이동 억제)
                 if self.highway_mode:
                     turn_amount = np.abs(np.arctan2(R[0,2], R[2,2]))
@@ -816,7 +833,7 @@ class VisualSLAM3D:
                         p2_idx_m = np.arange(len(p2_m)) # flow가 안 쓰였을 경우 fallback
                         
                     if len(p1_m) > 0:
-                        local_pts = self.triangulate(R, t_vec.reshape(3,1), p1_m, p2_m)
+                        local_pts = self.triangulate(R_orig, t_orig.reshape(3,1), p1_m, p2_m)
                     
                         # 필터링 (너무 멀거나 비상식적인 점 제거 - 주변 건물/도로 환경 고려하여 반경 확대)
                         valid = (local_pts[:, 2] > 0.5) & (local_pts[:, 2] < 150.0) & \
@@ -1429,6 +1446,13 @@ class VisualSLAM3D:
                 "avg_total_ms": round(avg_total, 2),
                 "avg_sp_ms": round(avg_sp, 2),
                 "avg_match_ms": round(avg_match, 2),
+                "avg_clahe_ms": round(avg_clahe, 2),
+                "avg_flow_ms": round(avg_flow, 2),
+                "avg_filter_ms": round(avg_filter, 2),
+                "avg_local_map_ms": round(avg_local_map, 2),
+                "avg_pnp_ms": round(avg_pnp, 2),
+                "avg_triangulation_ms": round(avg_triangulation, 2),
+                "avg_visualization_ms": round(avg_vis, 2),
                 "fps": round(fps, 2),
                 "total_frames": len(self.total_ms_list),
             },
