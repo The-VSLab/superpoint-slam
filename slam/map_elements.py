@@ -68,16 +68,14 @@ class Map:
         self.next_mp_id += 1
         return mp
         
-    def cull_bad_map_points(self):
+    def cull_bad_map_points(self, min_observations=3):
         """
         관측 횟수가 너무 적은 불량 MapPoint들을 메모리에서 삭제합니다.
         스케일 드리프트나 오매칭으로 생성된 노이즈 포인트를 정리합니다.
         """
         bad_mp_ids = []
         for mp_id, mp in self.map_points.items():
-            # 2번 이하로 관측된 맵포인트는 제거 
-            # (키프레임 생성 시 보통 최소 2개의 관측이 기본으로 생김: 생성 프레임 + 직전 프레임)
-            if mp.get_observation_count() < 3:
+            if mp.get_observation_count() < min_observations:
                 mp.set_bad()
                 bad_mp_ids.append(mp_id)
                 

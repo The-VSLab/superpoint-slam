@@ -15,6 +15,7 @@ from slam.loop_closure import LoopClosureManager
 from tracking.point_filter import PointFilter
 from tracking.semantic_filter import SemanticFilter
 from slam.map_elements import Map, MapPoint, KeyFrame
+from config.slam_config import SLAMConfig
 
 # --- 환경별 장치 자동 설정 함수 추가 ---
 def get_optimal_device():
@@ -63,147 +64,118 @@ class VisualSLAM3D:
         self,
         weights_path,
         input_path,
-        nn_thresh=0.7,
-        conf_thresh=0.015,
-        jetson_scale=None,
-        sp_scale=1.0,
-        sp_interval=1,
-        sp_fp16=False,
-        highway_mode=False,
+        config: SLAMConfig = None,
         output_dir="path_final",
-        roi_sky=0.35,
-        roi_hood=0.85,
         resize=None,
-        use_semantic=False,
-        use_shadow_filter=True,
-        use_top_region_filter=True,
-        shadow_value_thresh=0.46,
-        shadow_saturation_thresh=0.30,
-        min_shadow_grad=15.0,
-        min_shadow_local_std=8.0,
-        shadow_rel_dark_thresh=0.82,
-        top_region_ratio=0.30,
-        top_region_min_grad=25.0,
-        top_region_min_std=10.0,
-        # === 성능 최적화 파라미터 ===
-        enable_viz=True,
-        flow_win_size=21,
-        flow_max_level=3,
-        flow_fb_thresh=1.0,
-        use_clahe=True,
-        local_map_limit=0,
-        filter_on_sp_only=False
+        highway_mode=False,
     ):
+        # --- 설정 객체 ---
+        self.cfg = config or SLAMConfig()
+        c = self.cfg  # 축약 참조
+
         # 1. 장치 결정
         self.highway_mode = highway_mode
         self.device = get_optimal_device()
-        # SuperPointFrontend는 내부 설계상 True/False(CUDA 사용여부)를 받는 경우가 많으므로 호환성 유지
         self.use_cuda = (self.device == "cuda")
 
-        # 그림자 필터 파라미터 저장
-        self.use_shadow_filter = use_shadow_filter
-        self.use_top_region_filter = use_top_region_filter
-        self.shadow_value_thresh = shadow_value_thresh
-        self.shadow_saturation_thresh = shadow_saturation_thresh
-        self.min_shadow_grad = min_shadow_grad
-        self.min_shadow_local_std = min_shadow_local_std
-        self.shadow_rel_dark_thresh = shadow_rel_dark_thresh
-        self.top_region_ratio = top_region_ratio
-        self.top_region_min_grad = top_region_min_grad
-        self.top_region_min_std = top_region_min_std
+        # 설정 값 → 인스턴스 변수 (기존 코드 호환)
+        self.use_shadow_filter = c.point_filter.use_shadow_filter
+        self.use_top_region_filter = c.point_filter.use_top_region_filter
+        self.shadow_value_thresh = c.point_filter.shadow_value_thresh
+        self.shadow_saturation_thresh = c.point_filter.shadow_saturation_thresh
+        self.min_shadow_grad = c.point_filter.min_shadow_grad
+        self.min_shadow_local_std = c.point_filter.min_shadow_local_std
+        self.shadow_rel_dark_thresh = c.point_filter.shadow_rel_dark_thresh
+        self.top_region_ratio = c.point_filter.top_region_ratio
+        self.top_region_min_grad = c.point_filter.top_region_min_grad
+        self.top_region_min_std = c.point_filter.top_region_min_std
 
-        # 성능 최적화 파라미터 저장
-        self.enable_viz = enable_viz
-        self.flow_win_size = flow_win_size
-        self.flow_max_level = flow_max_level
-        self.flow_fb_thresh = flow_fb_thresh
-        self.use_clahe = use_clahe
-        self.local_map_limit = local_map_limit
-        self.filter_on_sp_only = filter_on_sp_only
+        self.enable_viz = c.viz.enabled
+        self.flow_win_size = c.optical_flow.win_size
+        self.flow_max_level = c.optical_flow.max_level
+        self.flow_fb_thresh = c.optical_flow.fb_thresh
+        self.use_clahe = c.clahe.enabled
+        self.local_map_limit = c.performance.local_map_limit
+        self.filter_on_sp_only = c.performance.filter_on_sp_only
 
         print(f"==> Running on device: {self.device.upper()}")
         if not self.enable_viz:
             print(f"==> Visualization DISABLED (performance mode)")
 
         self.input_path = input_path
-        
+
         cap = cv2.VideoCapture(input_path)
         if not cap.isOpened(): raise ValueError(f"Error: {input_path}")
-        
-        # 원본 영상 해상도 읽기
+
         orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         cap.release()
-        
+
         if resize is not None:
-            # 사용자 지정 해상도 사용 (8의 배수로 반올림)
             self.W = (resize[0] // 8) * 8
             self.H = (resize[1] // 8) * 8
         else:
-            # 종횡비 유지하면서 장축 기준 640으로 자동 리사이즈 (8의 배수)
-            target_long = 640
+            target_long = c.camera.resize_target
             if orig_w >= orig_h:
                 scale_factor = target_long / orig_w
             else:
                 scale_factor = target_long / orig_h
             self.W = (int(orig_w * scale_factor) // 8) * 8
             self.H = (int(orig_h * scale_factor) // 8) * 8
-        
-        # 최소 크기 보장
-        self.W = max(self.W, 64)
-        self.H = max(self.H, 64)
-        
+
+        self.W = max(self.W, c.camera.min_dimension)
+        self.H = max(self.H, c.camera.min_dimension)
+
         print(f"==> Original: {orig_w}x{orig_h} → Resized: {self.W}x{self.H} (aspect preserved, 8x aligned)")
-        
-        self.sp_scale = float(sp_scale)
-        self.sp_interval = max(int(sp_interval), 1)
+
+        self.sp_scale = float(c.superpoint.sp_scale)
+        self.sp_interval = max(int(c.superpoint.sp_interval), 1)
         if not (0.1 <= self.sp_scale <= 1.0):
             raise ValueError("sp_scale must be in [0.1, 1.0]")
 
         print(f"==> Resolution: {self.W}x{self.H}")
-        print(f"==> SuperPoint config: fp16={sp_fp16}, sp_scale={self.sp_scale}, sp_interval={self.sp_interval}")
-        print(f"==> Semantic SLAM (YOLO): {use_semantic}")
+        print(f"==> SuperPoint config: fp16={c.superpoint.sp_fp16}, sp_scale={self.sp_scale}, sp_interval={self.sp_interval}")
+        print(f"==> Semantic SLAM (YOLO): {c.semantic.enabled}")
 
-        # 카메라 파라미터 (일반적인 블랙박스 화각)
-        self.focal = max(self.W, self.H) * 0.8
+        # 카메라 파라미터
+        self.focal = max(self.W, self.H) * c.camera.focal_multiplier
         self.cx = self.W / 2.0
         self.cy = self.H / 2.0
         self.K = np.array([[self.focal, 0, self.cx], [0, self.focal, self.cy], [0, 0, 1]])
 
         print("==> Loading SuperPoint...")
-        # descriptor_dim=128로 테스트 후 안정적일 때 head_hidden 256-> 128로 전환예정
         self.fe = SuperPointFrontend(
             weights_path=weights_path,
-            nms_dist=4,
-            conf_thresh=conf_thresh,
-            nn_thresh=nn_thresh,
+            nms_dist=4,  # 아키텍처 상수
+            conf_thresh=c.superpoint.conf_thresh,
+            nn_thresh=c.superpoint.nn_thresh,
             cuda=self.use_cuda,
-            roi_sky=roi_sky,
-            roi_hood=roi_hood
+            roi_sky=c.superpoint.roi_sky,
+            roi_hood=c.superpoint.roi_hood
         )
-        
-        # CLAHE 그림자 개선 초기화
-        self.clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-        
-        # Semantic Filter 초기화
-        self.use_semantic = use_semantic
+
+        # CLAHE
+        self.clahe = cv2.createCLAHE(
+            clipLimit=c.clahe.clip_limit,
+            tileGridSize=tuple(c.clahe.tile_grid_size)
+        )
+
+        # Semantic Filter
+        self.use_semantic = c.semantic.enabled
         if self.use_semantic:
-            self.semantic_filter = SemanticFilter(conf_thresh=0.3)
+            self.semantic_filter = SemanticFilter(conf_thresh=c.semantic.yolo_conf)
         else:
             self.semantic_filter = None
         self.matcher = BTMatcher(
-            nn_thresh=nn_thresh, 
-            use_cuda=self.use_cuda, 
-            mutual=True,
-            ratio_thresh=0.85
+            nn_thresh=c.superpoint.nn_thresh,
+            use_cuda=self.use_cuda,
+            mutual=c.matcher.mutual,
+            ratio_thresh=c.matcher.ratio_thresh
         )
         self.loop_closure = LoopClosureManager(
             matcher=self.matcher,
             K=self.K,
-            min_frame_gap=30,
-            top_k=5,
-            min_inliers=30,
-            min_inlier_ratio=0.25,
+            config=c.loop_closure,
         )
 
         self.prev_frame = None
@@ -238,15 +210,17 @@ class VisualSLAM3D:
         # g2o Sim3 Pose Graph 최적화기 설정
         self.g2o_optimizer = None
         self.g2o_edges = []
-        self.jetson_scale = jetson_scale
+        self.jetson_scale = None  # legacy
 
         self.save_dir = str(output_dir)
         if not os.path.exists(self.save_dir): os.makedirs(self.save_dir)
+        # 사용된 설정을 출력 디렉토리에 저장 (재현성)
+        self.cfg.to_yaml(os.path.join(self.save_dir, "config_used.yaml"))
 
         # 실시간 2D 확인창 - 최적화: enable_viz=True인 경우에만 생성
         if self.enable_viz:
             cv2.namedWindow('Processing', cv2.WINDOW_NORMAL)
-            cv2.resizeWindow('Processing', 640, 360)
+            cv2.resizeWindow('Processing', *self.cfg.viz.window_size)
 
         # =========================
         # Benchmark / Stats
@@ -281,7 +255,7 @@ class VisualSLAM3D:
     def mask_car(self, img):
         # 대시보드(차체) 마스킹
         h, w = img.shape[:2]
-        img[int(h*0.92):, :] = 0 
+        img[int(h * self.cfg.camera.dashboard_mask_ratio):, :] = 0 
         return img
 
     def process(self):
@@ -343,6 +317,11 @@ class VisualSLAM3D:
                 if self.sp_scale != 1.0 and len(kpts) > 0:
                     kpts = kpts / self.sp_scale
 
+                # CUDA: desc를 GPU 텐서로 유지하여 Matcher까지 직통 전달
+                # MPS/CPU: 소규모 텐서 연산은 CPU numpy가 빠름 — 즉시 변환
+                if desc is not None and not self.use_cuda:
+                    desc = desc.cpu().numpy()
+
                 # Semantic Filter 적용 (가짜 코너 방지) - 추출 후 제거
                 if dyn_mask is not None and len(kpts) > 0:
                     kpts_int = kpts.astype(int)
@@ -352,7 +331,10 @@ class VisualSLAM3D:
                     valid_mask = ~dyn_mask[ky, kx]
                     kpts = kpts[valid_mask]
                     if desc is not None:
-                        desc = desc[:, valid_mask]
+                        if isinstance(desc, torch.Tensor):
+                            desc = desc[:, torch.from_numpy(valid_mask).to(desc.device)]
+                        else:
+                            desc = desc[:, valid_mask]
 
                 # 하늘 + 그림자 + 상단 영역 통합 필터 적용 (HSV 연산 1회로 통합)
                 # 최적화: filter_on_sp_only=True인 경우 SuperPoint 추론 시에만 적용
@@ -375,7 +357,11 @@ class VisualSLAM3D:
                         top_region_min_std=self.top_region_min_std,
                     )
                     kpts = kpts[combined_mask]
-                    desc = desc[:, combined_mask] if desc is not None else None
+                    if desc is not None:
+                        if isinstance(desc, torch.Tensor):
+                            desc = desc[:, torch.from_numpy(combined_mask).to(desc.device)]
+                        else:
+                            desc = desc[:, combined_mask]
                 filter_t1 = time.perf_counter()
             else:
                 sp_t0 = time.perf_counter()
@@ -391,7 +377,9 @@ class VisualSLAM3D:
                 lk_params = dict(
                     winSize=(self.flow_win_size, self.flow_win_size),
                     maxLevel=self.flow_max_level,
-                    criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01),
+                    criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT,
+                             self.cfg.optical_flow.termination_max_iter,
+                             self.cfg.optical_flow.termination_epsilon),
                 )
 
                 # Forward: prev → curr
@@ -490,7 +478,7 @@ class VisualSLAM3D:
             # flow나 단순 이전 프레임 매칭으로 확보한 curr_3d_pts_world 외에도,
             # 현재 카메라 포즈 주변의 로컬 맵포인트들을 불러와 추가로 매칭을 시도합니다.
             local_map_t0 = time.perf_counter()
-            local_map_pts_dict = self.map.get_recent_map_points(num_recent_keyframes=5)
+            local_map_pts_dict = self.map.get_recent_map_points(num_recent_keyframes=self.cfg.performance.local_map_keyframes)
 
             # 최적화: local_map_limit이 설정된 경우 MapPoint 개수 제한
             if self.local_map_limit > 0 and len(local_map_pts_dict) > self.local_map_limit:
@@ -546,7 +534,7 @@ class VisualSLAM3D:
                                 pt_proj = visible_proj_pts[mp_idx]
                                 
                                 dist = np.linalg.norm(pt_proj - kpts[kpt_idx][:2])
-                                if dist < 10.0:  # 10픽셀 이내 투영 오차만 허용 (강력한 필터)
+                                if dist < self.cfg.performance.local_map_projection_dist:
                                     extra_obj_pts.append(mp.pos3d)
                                     extra_img_pts.append(kpts[kpt_idx][:2])
                                     extra_mp_ids.append(mp)
@@ -589,13 +577,14 @@ class VisualSLAM3D:
                 obj_pts = np.vstack(obj_pts_list)
                 img_pts = np.vstack(img_pts_list)
                 
-                if len(obj_pts) >= 15:
+                if len(obj_pts) >= self.cfg.pnp.min_points:
                     success, rvec, tvec_pnp, inliers_pnp = cv2.solvePnPRansac(
-                        obj_pts, img_pts, self.K, None, 
-                        flags=cv2.SOLVEPNP_ITERATIVE, reprojectionError=5.0
+                        obj_pts, img_pts, self.K, None,
+                        flags=cv2.SOLVEPNP_ITERATIVE,
+                        reprojectionError=self.cfg.pnp.reprojection_error
                     )
-                    
-                    if success and inliers_pnp is not None and len(inliers_pnp) > 10:
+
+                    if success and inliers_pnp is not None and len(inliers_pnp) > self.cfg.pnp.min_inliers:
                         R_pnp, _ = cv2.Rodrigues(rvec)
                         t_pnp = tvec_pnp
                         
@@ -613,14 +602,14 @@ class VisualSLAM3D:
                         t_rel = T_rel_mat[:3, 3]
                         
                         tvec_len = np.linalg.norm(t_rel)
-                        # 필터 1: 절대 상한 (10m 이상 극단적 점프 방지)
-                        if 0.001 < tvec_len < 10.0:
+                        # 필터 1: 절대 상한
+                        if self.cfg.pnp.min_translation < tvec_len < self.cfg.pnp.max_translation:
                             # 필터 2: 속도 기반 점프 감지 — 최근 이동 속도 대비 과도한 이동 거부
                             speed_rejected = False
                             if len(self.recent_speeds) >= 3:
                                 median_speed = np.median(self.recent_speeds[-10:])
-                                # 최근 속도 중앙값의 5배 초과 시 점프로 간주 (최소 임계값 0.5m)
-                                speed_thresh = max(median_speed * 5.0, 0.5)
+                                speed_thresh = max(median_speed * self.cfg.motion.speed_jump_multiplier,
+                                                   self.cfg.motion.min_speed_thresh)
                                 if tvec_len > speed_thresh:
                                     print(f"frame {frame_idx}: [PnP REJECTED] speed jump {tvec_len:.3f}m > thresh {speed_thresh:.3f}m (median_speed={median_speed:.3f})")
                                     speed_rejected = True
@@ -632,7 +621,7 @@ class VisualSLAM3D:
                                 last_t_norm = np.linalg.norm(self.last_t_vec)
                                 if last_t_norm > 1e-4:
                                     cos_angle = np.dot(t_rel, self.last_t_vec) / (tvec_len * last_t_norm + 1e-8)
-                                    if cos_angle < -0.5:  # 120° 이상 반전
+                                    if cos_angle < self.cfg.motion.direction_reversal_cos:
                                         print(f"frame {frame_idx}: [PnP REJECTED] direction reversal cos={cos_angle:.3f}")
                                         pnp_success = False
                                     else:
@@ -655,16 +644,16 @@ class VisualSLAM3D:
 
             # 2. PnP 실패 시 Essential Matrix 또는 Homography (부트스트랩 및 평면/전진 모션 강건화)
             if not pnp_success and p1 is not None and p2 is not None and len(p1) >= 8:
-                E, mask_E = cv2.findEssentialMat(p2, p1, self.K, method=cv2.RANSAC, prob=0.999, threshold=0.5)
-                # Ensure Homography also maps p2 to p1 (curr to prev) to match recoverPose direction
-                H, mask_H = cv2.findHomography(p2, p1, cv2.RANSAC, 3.0)
+                E, mask_E = cv2.findEssentialMat(p2, p1, self.K, method=cv2.RANSAC, prob=0.999,
+                                                threshold=self.cfg.epipolar.essential_threshold)
+                H, mask_H = cv2.findHomography(p2, p1, cv2.RANSAC, self.cfg.epipolar.homography_threshold)
                 
                 inliers_E = np.count_nonzero(mask_E) if mask_E is not None else 0
                 inliers_H = np.count_nonzero(mask_H) if mask_H is not None else 0
 
                 use_homography = False
                 # Homography inlier가 Essential inlier와 비슷하거나 더 많으면 Planar로 간주 (고속도로/전진모션 특화)
-                if inliers_H > inliers_E * 0.85 and inliers_H > 15:
+                if inliers_H > inliers_E * self.cfg.epipolar.homography_selection_ratio and inliers_H > self.cfg.epipolar.homography_min_inliers:
                     use_homography = True
                 
                 if use_homography and H is not None:
@@ -754,7 +743,7 @@ class VisualSLAM3D:
                     t_vec[0] *= damp_x 
                     
                 # 3. Y축(상하 높이) 이동 극단적 억제 (IMU 역할: 평지 주행 가정)
-                t_vec[1] *= 0.05 
+                t_vec[1] *= self.cfg.stabilization.y_damping
                 
                 # 댐핑 후 스케일 복원 (속도 감소 방지)
                 t_len_after = np.linalg.norm(t_vec)
@@ -763,7 +752,7 @@ class VisualSLAM3D:
                 
                 # [Fix 2] 카메라 Pitch/Roll 억제 실제 구현 (기존 Dead Code 수정)
                 # 단안 카메라 특성상 전진 시 바닥을 보면 위로 올라가는것처럼 착각함
-                pitch_roll_damp = 0.15 # 0.0=완전고정, 1.0=그대로사용 (평지 주행 시 낮게 설정)
+                pitch_roll_damp = self.cfg.stabilization.pitch_roll_damping
                 euler_ret = cv2.RQDecomp3x3(R)
                 euler_angles = np.array(euler_ret[0])  # (Pitch, Yaw, Roll) in degrees
                 Qx, Qy, Qz = euler_ret[1], euler_ret[2], euler_ret[3]  # 분해된 기본 회전행렬
@@ -791,7 +780,7 @@ class VisualSLAM3D:
                 if last_t_norm > 1e-6 and t_norm > 1e-6:
                     cos_sim = np.dot(t_vec, self.last_t_vec) / (t_norm * last_t_norm)
                     # 같은 방향(cos~1): 관성 0.4, 반대 방향(cos~-1): 관성 0.0
-                    inertia_w = np.clip(cos_sim * 0.4, 0.0, 0.4)
+                    inertia_w = np.clip(cos_sim * self.cfg.stabilization.inertia_weight, 0.0, self.cfg.stabilization.inertia_weight)
                 else:
                     inertia_w = 0.0
                 mixed_t = t_vec * (1.0 - inertia_w) + self.last_t_vec * inertia_w
@@ -805,8 +794,8 @@ class VisualSLAM3D:
                 self.dead_reckoning_count = 0  # [Fix 1] 추적 성공 시 카운터 리셋
                 # [Fix 4] 속도 기록
                 self.recent_speeds.append(float(np.linalg.norm(t_vec)))
-                if len(self.recent_speeds) > 30:
-                    self.recent_speeds = self.recent_speeds[-30:]
+                if len(self.recent_speeds) > self.cfg.stabilization.speed_history_len:
+                    self.recent_speeds = self.recent_speeds[-self.cfg.stabilization.speed_history_len:]
                 
                 # Pose Update (Relative to absolute)
                 T_rel = np.eye(4)
@@ -816,7 +805,7 @@ class VisualSLAM3D:
                 
                 # --- [절대 Y축 높이 강제 고정 (Hard Clip)] --- 
                 # 차량이 하늘로 날아가거나 땅굴을 파고 들어가는 현상 원천 차단
-                self.cur_pose[1, 3] = np.clip(self.cur_pose[1, 3], -0.5, 0.5)
+                self.cur_pose[1, 3] = np.clip(self.cur_pose[1, 3], *self.cfg.stabilization.y_clip)
                 
                 valid_step = True
                 
@@ -836,8 +825,9 @@ class VisualSLAM3D:
                         local_pts = self.triangulate(R_orig, t_orig.reshape(3,1), p1_m, p2_m)
                     
                         # 필터링 (너무 멀거나 비상식적인 점 제거 - 주변 건물/도로 환경 고려하여 반경 확대)
-                        valid = (local_pts[:, 2] > 0.5) & (local_pts[:, 2] < 150.0) & \
-                                (np.abs(local_pts[:, 0]) < 100.0) & (np.abs(local_pts[:, 1]) < 20.0)
+                        tri = self.cfg.triangulation
+                        valid = (local_pts[:, 2] > tri.min_depth) & (local_pts[:, 2] < tri.max_depth) & \
+                                (np.abs(local_pts[:, 0]) < tri.max_x_extent) & (np.abs(local_pts[:, 1]) < tri.max_y_extent)
                         local_pts = local_pts[valid]
                         p1_m_filtered = p1_m[valid]
                         p2_m_filtered = p2_m[valid]
@@ -866,7 +856,7 @@ class VisualSLAM3D:
                             if kpt_idx not in self.curr_kpt_to_mp:
                                 # When using flow, p2_idx refers to flow_p2, not the independently extracted kpts/desc.
                                 if not use_flow and desc is not None and kpt_idx < desc.shape[1]:
-                                    desc_i = desc[:, kpt_idx]
+                                    desc_i = desc[:, kpt_idx].cpu().numpy() if isinstance(desc, torch.Tensor) else desc[:, kpt_idx]
                                 else:
                                     desc_i = None
                                 mp = self.map.create_map_point(pt3d, desc_i)
@@ -901,17 +891,17 @@ class VisualSLAM3D:
             if not valid_step:
                 # [Fix 1] Dead Reckoning 속도 감쇠 — 연속 실패 시 점진적 감속
                 self.dead_reckoning_count += 1
-                decay = 0.8 ** self.dead_reckoning_count
+                decay = self.cfg.stabilization.dead_reckoning_decay ** self.dead_reckoning_count
                 T_rel = np.eye(4)
                 T_rel[:3, 3] = self.last_t_vec * decay
                 self.cur_pose = self.cur_pose @ T_rel
 
             # [Fix 5] 궤적 정체 감지 — 10프레임 동안 0.5m 미만 이동 시 강제 키프레임 재추출
-            if len(self.traj_points) >= 10:
+            if len(self.traj_points) >= self.cfg.keyframe.stall_lookback:
                 recent_dist = np.linalg.norm(
-                    np.array(self.cur_pose[:3, 3]) - np.array(self.traj_points[-10])
+                    np.array(self.cur_pose[:3, 3]) - np.array(self.traj_points[-self.cfg.keyframe.stall_lookback])
                 )
-                if recent_dist < 0.5:
+                if recent_dist < self.cfg.keyframe.stall_distance:
                     self.force_keyframe = True
                     self.last_t_vec *= 0.0  # 관성 리셋
                     self.dead_reckoning_count = 0
@@ -930,18 +920,18 @@ class VisualSLAM3D:
                 median_disp = np.median(disp) if len(disp) > 0 else 0
                 self.accumulated_parallax += median_disp
                 
-                if self.accumulated_parallax >= 30.0:  # 30 픽셀 이상 시차 발생 시
+                if self.accumulated_parallax >= self.cfg.keyframe.parallax_threshold:
                     need_keyframe = True
             
             # 2. Inlier 감소 기반 (적응형 임계값)
             if p1 is not None and p2 is not None:
                 recent = self.inliers_list[-30:] if len(self.inliers_list) > 0 else [80]
-                adaptive_thresh = max(int(np.median(recent) * 0.4), 30)
-                if inliers < adaptive_thresh and (frame_idx - self.last_keyframe_idx) >= 5:
+                adaptive_thresh = max(int(np.median(recent) * self.cfg.keyframe.adaptive_inlier_ratio), self.cfg.keyframe.min_adaptive_inliers)
+                if inliers < adaptive_thresh and (frame_idx - self.last_keyframe_idx) >= self.cfg.keyframe.min_gap:
                     need_keyframe = True
                     
             # 3. 일정 프레임 이상 경과 시 강제 추가 (Fallback)
-            if (frame_idx - self.last_keyframe_idx) >= 30:  # 너무 자주 추가되지 않도록 간격 완화
+            if (frame_idx - self.last_keyframe_idx) >= self.cfg.keyframe.max_gap:
                 need_keyframe = True
 
             if need_keyframe:
@@ -958,10 +948,10 @@ class VisualSLAM3D:
                                 # 브로드캐스팅 거리 계산
                                 dist = np.linalg.norm(kpts[:, :2] - flow_p2[f_idx], axis=1)
                                 best_idx = int(np.argmin(dist))
-                                if dist[best_idx] < 3.0:  # 3픽셀 이내면 동일 특징점으로 간주
+                                if dist[best_idx] < self.cfg.keyframe.alignment_dist:
                                     aligned_kpt_to_mp[best_idx] = mp
                                     # 이 때 MapPoint의 descriptor 업데이트 (신규 추출된 것으로)
-                                    mp.update_descriptor(desc[:, best_idx])
+                                    mp.update_descriptor(desc[:, best_idx].cpu().numpy() if isinstance(desc, torch.Tensor) else desc[:, best_idx])
                         self.curr_kpt_to_mp = aligned_kpt_to_mp
 
                     self.add_keyframe(frame_idx, kpts, desc, curr_3d_pts_world, T_rel.copy())
@@ -976,8 +966,8 @@ class VisualSLAM3D:
                     
                     # 새 키프레임 생성 후 불량 맵 포인트 정리 (Culling)
                     # 키프레임 간 간격을 유지하면서 불필요한 관측 횟수 2 이하의 특징점 메모리 해제
-                    if len(self.keyframes) % 5 == 0:  # 5개 키프레임 단위로 청소
-                        self.map.cull_bad_map_points()
+                    if len(self.keyframes) % self.cfg.keyframe.culling_interval == 0:
+                        self.map.cull_bad_map_points(min_observations=self.cfg.map_culling.min_observations)
 
             # 2D 뷰 표시 - 최적화: enable_viz=False인 경우 스킵
             vis_t0 = time.perf_counter()
@@ -1054,8 +1044,11 @@ class VisualSLAM3D:
         self.keyframe_local_pts.append([])  # 이 키프레임에 등록될 로컬 3D 포인트들
         self.keyframe_original_poses.append(self.cur_pose.copy())
 
+        # GPU 텐서 → numpy 변환 (KeyFrame/LoopClosure 저장 경계)
+        desc_np = desc.cpu().numpy() if isinstance(desc, torch.Tensor) else desc
+
         # [NEW] Create and store KeyFrame object in Map
-        kf_obj = KeyFrame(frame_idx, self.cur_pose.copy(), kpts, desc)
+        kf_obj = KeyFrame(frame_idx, self.cur_pose.copy(), kpts, desc_np)
         for kpt_idx, mp in self.curr_kpt_to_mp.items():
             kf_obj.add_map_point_association(kpt_idx, mp.id)
             mp.add_observation(frame_idx, kpts[kpt_idx][:2])
@@ -1074,8 +1067,8 @@ class VisualSLAM3D:
             })
 
         # pts_3d는 이미 월드 좌표계 (curr_3d_pts_world에서 전달됨)
-        self.loop_closure.add_keyframe(frame_idx, kpts, desc, pts_3d)
-        loop = self.loop_closure.find_loop(frame_idx, kpts, desc)
+        self.loop_closure.add_keyframe(frame_idx, kpts, desc_np, pts_3d)
+        loop = self.loop_closure.find_loop(frame_idx, kpts, desc_np)
         if loop is not None:
             # Sim3에서는 스케일 정보를 보존하여 전달 (정규화 없음!)
             scale = loop.scale
@@ -1130,10 +1123,10 @@ class VisualSLAM3D:
                 if mp is not None and not mp.is_bad:
                     # BA 안정성을 위해 최소 3회 이상 관측된 MapPoint만 참여
                     valid_obs = sum(1 for obs_kf in mp.observations if obs_kf in kf_id_set)
-                    if valid_obs >= 2:
+                    if valid_obs >= self.cfg.ba.min_observations:
                         involved_mps[mp_id] = mp
-        
-        if len(involved_mps) < 10:
+
+        if len(involved_mps) < self.cfg.ba.min_map_points:
             return
         
         # g2o 최적화기 구축 (BA용 별도 구성)
@@ -1209,11 +1202,11 @@ class VisualSLAM3D:
                 e.set_vertex(1, optimizer.vertex(kf_vertex_ids[obs_kf_id]))  # Camera
                 e.set_measurement(np.array(pixel_uv[:2], dtype=np.float64))
                 # Information Matrix 감소 (1.0 → 0.5): 재투영 오차 영향력 절반으로
-                e.set_information(np.eye(2) * 0.5)
+                e.set_information(np.eye(2) * self.cfg.ba.reprojection_weight)
                 
                 # Robust Kernel: 아웃라이어 관측 영향 억제
                 kernel = g2o.RobustKernelHuber()
-                kernel.set_delta(5.991)  # chi2 95% threshold for 2DOF
+                kernel.set_delta(self.cfg.ba.huber_delta)
                 e.set_robust_kernel(kernel)
                 e.set_parameter_id(0, 0)  # 카메라 파라미터 바인딩
                 
@@ -1259,7 +1252,7 @@ class VisualSLAM3D:
                 pose_drifts[kf_id] = drift
 
                 # 합리적인 범위 내에서만 업데이트 (3m 이내로 엄격화)
-                if drift < 3.0:
+                if drift < self.cfg.ba.pose_drift_threshold:
                     pose_updates[kf_id] = pose_opt
                 else:
                     print(f"  [BA WARNING] KF {kf_id}: Large drift {drift:.2f}m, skipping update")
@@ -1316,11 +1309,10 @@ class VisualSLAM3D:
 
     def run_local_ba(self):
         """Local Bundle Adjustment: 최근 N개 키프레임 + 관측 MapPoint 최적화"""
-        num_recent = 5
-        recent_kf_ids = sorted(self.map.keyframes.keys(), reverse=True)[:num_recent]
+        recent_kf_ids = sorted(self.map.keyframes.keys(), reverse=True)[:self.cfg.ba.local_keyframes]
         if len(recent_kf_ids) < 2:
             return
-        self._run_bundle_adjustment(recent_kf_ids, num_iterations=5, fix_first=True)
+        self._run_bundle_adjustment(recent_kf_ids, num_iterations=self.cfg.ba.local_iterations, fix_first=True)
 
     def run_global_ba(self):
         """Global Bundle Adjustment: 전체 키프레임 + 전체 MapPoint 최적화"""
@@ -1328,15 +1320,14 @@ class VisualSLAM3D:
         if len(all_kf_ids) < 2:
             return
         print("\n===> Running Global Bundle Adjustment...")
-        # 반복 횟수 감소 (20 → 10): 발산 방지
-        self._run_bundle_adjustment(all_kf_ids, num_iterations=10, fix_first=True)
+        self._run_bundle_adjustment(all_kf_ids, num_iterations=self.cfg.ba.global_iterations, fix_first=True)
         
         # GBA 후 전체 키프레임 Y축 높이 강제 클리핑 (평지 주행 가정)
         for i in range(len(self.keyframes)):
-            self.keyframes[i][1, 3] = np.clip(self.keyframes[i][1, 3], -0.5, 0.5)
+            self.keyframes[i][1, 3] = np.clip(self.keyframes[i][1, 3], *self.cfg.stabilization.y_clip)
         # Map 내 KeyFrame 포즈도 동기화
         for kf_id, kf in self.map.keyframes.items():
-            kf.pose[1, 3] = np.clip(kf.pose[1, 3], -0.5, 0.5)
+            kf.pose[1, 3] = np.clip(kf.pose[1, 3], *self.cfg.stabilization.y_clip)
         
         print("===> Global BA Complete.")
 
@@ -1371,8 +1362,8 @@ class VisualSLAM3D:
                 # - 회전(0-2): 높은 신뢰도 (방향 보정에 탁월)
                 # - 병진(3-5): PnP inlier 품질 향상(15개 이상)에 따라 병진 신뢰도도 어느정도 반영
                 info = np.eye(6)
-                info[0, 0] = info[1, 1] = info[2, 2] = 10.0  # 회전 강하게
-                info[3, 3] = info[4, 4] = info[5, 5] = 1.0   # 병진도 정상 반영
+                info[0, 0] = info[1, 1] = info[2, 2] = self.cfg.pose_graph.rotation_weight
+                info[3, 3] = info[4, 4] = info[5, 5] = self.cfg.pose_graph.translation_weight
             else:
                 # 오도메트리 엣지: 등방 Information Matrix
                 info = np.eye(6) * edge_info['information_scale']
@@ -1383,7 +1374,7 @@ class VisualSLAM3D:
 
         # 3. 최적화 실행
         optimizer.initialize_optimization()
-        optimizer.optimize(20)
+        optimizer.optimize(self.cfg.pose_graph.iterations)
 
         # 4. 결과 추출 → 키프레임 포즈 갱신
         for i in range(len(self.keyframes)):
@@ -1519,7 +1510,7 @@ class VisualSLAM3D:
         
         # [중요] 점 크기 조절 안됨 -> Voxel Downsample로 밀도 조절
         # 너무 촘촘하면 보기 싫고, 너무 듬성하면 휑함. 적당히 0.1m 간격으로 정리
-        pcd = pcd.voxel_down_sample(voxel_size=0.1)
+        pcd = pcd.voxel_down_sample(voxel_size=self.cfg.viz.voxel_size)
 
         # 3. 경로선 (Trajectory Line) - 최적화된 Keyframe들을 연결
         traj_pts = np.array([pose[:3, 3] for pose in self.keyframes])
@@ -1552,7 +1543,7 @@ class VisualSLAM3D:
         
         # 배경색: 영상처럼 검은색(Dark)이 포인트가 제일 잘 보임
         vis.get_render_option().background_color = np.asarray([0.05, 0.05, 0.05])
-        vis.get_render_option().point_size = 3.0 # 점 크기 적당히
+        vis.get_render_option().point_size = self.cfg.viz.point_size
         
         for geom in vis_geoms:
             vis.add_geometry(geom)
@@ -1594,21 +1585,14 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--input', type=str, required=True)
     parser.add_argument('--weights', type=str, required=True)
-    parser.add_argument('--jetson-scale', type=float, default=None)
-    parser.add_argument('--sp-scale', type=float, default=0.5)
-    parser.add_argument('--sp-interval', type=int, default=2)
-    parser.add_argument('--sp-fp16', action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument('--config', type=str, default=None, help="YAML config path")
     parser.add_argument('--highway-mode', action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument('--conf-thresh', type=float, default=0.003)
     args = parser.parse_args()
+    cfg = SLAMConfig.from_yaml(args.config) if args.config else SLAMConfig()
     slam = VisualSLAM3D(
         weights_path=args.weights,
         input_path=args.input,
-        conf_thresh=args.conf_thresh,
-        jetson_scale=args.jetson_scale,
-        sp_scale=args.sp_scale,
-        sp_interval=args.sp_interval,
-        sp_fp16=args.sp_fp16,
+        config=cfg,
         highway_mode=args.highway_mode,
     )
     slam.process()

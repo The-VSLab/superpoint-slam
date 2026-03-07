@@ -5,6 +5,7 @@ SuperPoint 2D SLAM 단독 앱
 - result/ 디렉토리에 자동 번호 매기기 (superpoint_01, orb_01, ...)
 """
 import argparse
+import copy
 import sys
 from pathlib import Path
 
@@ -15,6 +16,7 @@ if str(ROOT_DIR) not in sys.path:
 from slam.visual_slam_2d import VisualSLAM2D
 from slam.visual_slam_3d import VisualSLAM3D
 from orbslam.orb_slam_2d import ORBSLAM2D
+from config.slam_config import SLAMConfig
 
 
 def get_next_subdir(output_dir, prefix):
@@ -122,7 +124,100 @@ def build_parser():
     parser.add_argument("--filter-on-sp-only", action="store_true",
                         help="필터를 SuperPoint 추론 프레임에만 적용 (optical flow 프레임은 스킵)")
 
+    # === YAML 설정 파일 ===
+    parser.add_argument("--config", type=str, default=None,
+                        help="YAML 설정 파일 경로 (미지정 시 기본값 사용, CLI 인자로 개별 오버라이드 가능)")
+
     return parser
+
+
+def _find_explicit_args(parser, args=None):
+    """CLI에서 명시적으로 지정된 인자의 dest 이름 set 반환.
+    argparse 기본값을 SUPPRESS로 설정한 사본으로 파싱하여,
+    실제로 커맨드라인에서 넘어온 인자만 식별한다.
+    """
+    p = copy.deepcopy(parser)
+    for action in p._actions:
+        if action.dest != "help":
+            action.default = argparse.SUPPRESS
+    ns, _ = p.parse_known_args(args)
+    return set(vars(ns).keys())
+
+
+# CLI dest → config dot-notation 매핑 테이블
+_CLI_MAP = {
+    # superpoint
+    "slam_conf_thresh": "superpoint.conf_thresh",
+    "nn_thresh": "superpoint.nn_thresh",
+    "max_kpts": "superpoint.max_kpts",
+    "min_kpts": "superpoint.min_kpts",
+    "roi_sky": "superpoint.roi_sky",
+    "roi_hood": "superpoint.roi_hood",
+    "sp_scale": "superpoint.sp_scale",
+    "sp_interval": "superpoint.sp_interval",
+    "sp_fp16": "superpoint.sp_fp16",
+    # semantic
+    "use_semantic": "semantic.enabled",
+    # point_filter
+    "use_shadow_filter": "point_filter.use_shadow_filter",
+    "use_top_region_filter": "point_filter.use_top_region_filter",
+    "shadow_value_thresh": "point_filter.shadow_value_thresh",
+    "shadow_saturation_thresh": "point_filter.shadow_saturation_thresh",
+    "min_shadow_grad": "point_filter.min_shadow_grad",
+    "min_shadow_local_std": "point_filter.min_shadow_local_std",
+    "shadow_rel_dark_thresh": "point_filter.shadow_rel_dark_thresh",
+    "top_region_ratio": "point_filter.top_region_ratio",
+    "top_region_min_grad": "point_filter.top_region_min_grad",
+    "top_region_min_std": "point_filter.top_region_min_std",
+    # optical_flow
+    "flow_win_size": "optical_flow.win_size",
+    "flow_max_level": "optical_flow.max_level",
+    "flow_fb_thresh": "optical_flow.fb_thresh",
+    # performance
+    "local_map_limit": "performance.local_map_limit",
+    "filter_on_sp_only": "performance.filter_on_sp_only",
+}
+
+
+def build_config(opt, parser):
+    """CLI 옵션에서 SLAMConfig 생성.
+    --config 지정 시 YAML 로드 후 CLI 개별 인자로 오버라이드.
+    --config 미지정 시 dataclass 기본값(= default.yaml 동일) 사용.
+    """
+    # 1. 기본 config 로드
+    if opt.config:
+        cfg = SLAMConfig.from_yaml(opt.config)
+    else:
+        cfg = SLAMConfig()
+
+    # 2. aggressive_shadow_filter 프리셋 (개별 CLI보다 먼저 적용)
+    if opt.aggressive_shadow_filter:
+        cfg.point_filter.shadow_value_thresh = 0.38
+        cfg.point_filter.shadow_saturation_thresh = 0.24
+        cfg.point_filter.shadow_rel_dark_thresh = 0.72
+        cfg.point_filter.min_shadow_grad = 32
+        cfg.point_filter.min_shadow_local_std = 16
+        cfg.point_filter.top_region_ratio = 0.58
+        cfg.point_filter.top_region_min_grad = 52
+        cfg.point_filter.top_region_min_std = 20
+
+    # 3. CLI에서 명시적으로 지정된 인자만 override
+    explicit = _find_explicit_args(parser)
+    overrides = {}
+    for cli_dest, config_key in _CLI_MAP.items():
+        if cli_dest in explicit:
+            overrides[config_key] = getattr(opt, cli_dest)
+
+    # 반전 플래그 처리
+    if "no_viz" in explicit:
+        overrides["viz.enabled"] = not opt.no_viz
+    if "no_clahe" in explicit:
+        overrides["clahe.enabled"] = not opt.no_clahe
+
+    if overrides:
+        cfg.merge_cli(overrides)
+
+    return cfg
 
 
 def run_superpoint_slam(opt):
@@ -229,51 +324,31 @@ def run_orb_slam(opt):
     return stats
 
 
-def run_3d_slam(opt):
+def run_3d_slam(opt, parser):
     """SuperPoint 3D SLAM 실행 (포인트 클라우드 시각화)"""
     out_dir = get_next_subdir(opt.output_dir, "superpoint_3d")
-    
+
     print(f"\n{'='*80}")
     print(f"🎬 SuperPoint 3D SLAM 시작")
     print(f"{'='*80}")
     print(f"📁 입력: {opt.input}")
     print(f"📁 출력: {out_dir}")
+    if opt.config:
+        print(f"📄 설정: {opt.config}")
     print(f"{'='*80}\n")
+
+    config = build_config(opt, parser)
+
     slam = VisualSLAM3D(
         weights_path=opt.weights,
         input_path=opt.input,
-        nn_thresh=opt.nn_thresh,
-        conf_thresh=opt.slam_conf_thresh,
-        sp_scale=opt.sp_scale,
-        sp_interval=opt.sp_interval,
-        sp_fp16=opt.sp_fp16,
+        config=config,
         output_dir=str(out_dir),
-        roi_sky=opt.roi_sky,
-        roi_hood=opt.roi_hood,
-        use_semantic=opt.use_semantic,
         resize=opt.resize,
-        use_shadow_filter=opt.use_shadow_filter,
-        use_top_region_filter=opt.use_top_region_filter,
-        shadow_value_thresh=opt.shadow_value_thresh,
-        shadow_saturation_thresh=opt.shadow_saturation_thresh,
-        min_shadow_grad=opt.min_shadow_grad,
-        min_shadow_local_std=opt.min_shadow_local_std,
-        shadow_rel_dark_thresh=opt.shadow_rel_dark_thresh,
-        top_region_ratio=opt.top_region_ratio,
-        top_region_min_grad=opt.top_region_min_grad,
-        top_region_min_std=opt.top_region_min_std,
-        # === 성능 최적화 파라미터 ===
-        enable_viz=not opt.no_viz,
-        flow_win_size=opt.flow_win_size,
-        flow_max_level=opt.flow_max_level,
-        flow_fb_thresh=opt.flow_fb_thresh,
-        use_clahe=not opt.no_clahe,
-        local_map_limit=opt.local_map_limit,
-        filter_on_sp_only=opt.filter_on_sp_only
     )
-    
+
     slam.process()
-    
+
     print(f"\n{'='*80}")
     print(f"✅ 3D 포인트 클라우드 및 2D 비교 맵이 생성되었습니다!")
     print(f"{'='*80}")
@@ -283,8 +358,9 @@ def run_3d_slam(opt):
 
 
 def main():
-    opt = build_parser().parse_args()
-    
+    parser = build_parser()
+    opt = parser.parse_args()
+
     if opt.mode == "slam":
         # SuperPoint 2D만 실행
         run_superpoint_slam(opt)
@@ -292,7 +368,7 @@ def main():
         # 2D 비교: SuperPoint vs ORB
         sp_stats = run_superpoint_slam(opt)
         orb_stats = run_orb_slam(opt)
-        
+
         # 비교 결과 출력
         print(f"\n{'='*80}")
         print(f"📊 비교 결과")
@@ -307,7 +383,7 @@ def main():
         print(f"{'='*60}\n")
     elif opt.mode == "3d":
         # 3D 포인트 클라우드 (Open3D 시각화)
-        run_3d_slam(opt)
+        run_3d_slam(opt, parser)
 
 
 if __name__ == "__main__":
