@@ -32,16 +32,30 @@ MobileNet 기반의 경량 SuperPoint 프론트엔드를 설계하고,
 
 ---
 
-## 실행 환경 (Execution)
+## 환경 설정 및 실행 (Execution & Setup)
 
-이 저장소는 루트 기준 패키지(`models/`, `frontend/`, `tracking/`, `io_utils/`)를 사용합니다.  
-다음 중 하나를 만족해야 합니다.
+이 저장소는 루트 기준 패키지(`models/`, `frontend/`, `tracking/`, `io_utils/`)를 사용합니다.
 
-1. 프로젝트 루트에서 실행
-2. `PYTHONPATH` 설정
+### 1) 패키지 설치 (Installation)
+
+의존성 패키지를 설치하는 방법은 두 가지가 있습니다.
+
+**방법 A: `uv`를 사용하는 경우 (권장)**
+프로젝트 루트에서 다음 명령어를 실행하면 `pyproject.toml`에 정의된 최적의 패키지 환경이 자동으로 구축됩니다.
 ```bash
-export PYTHONPATH=.
+uv sync
 ```
+
+**방법 B: `pip`를 사용하는 경우**
+가상환경을 활성화한 후 `requirements.txt`를 통해 설치합니다.
+```bash
+pip install -r requirements.txt
+```
+
+### 2) 환경 변수 설정 (Environment)
+실행 위치에 상관없이 모듈을 인식하도록 하기 위해 다음 중 하나를 만족해야 합니다.
+- 프로젝트 루트에서 실행
+- `PYTHONPATH` 설정: `export PYTHONPATH=.`
 
 ---
 

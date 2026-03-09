@@ -13,4 +13,9 @@ dependencies = [
     "pandas>=2.3.3",
     "torch>=2.0,<2.3",
     "torchvision>=0.15,<0.18",
+    "ultralytics>=8.2.0",
+    "g2o-python==0.0.12",
+    "pyyaml>=6.0.3",
+    "tqdm>=4.67.2",
+    "scipy>=1.11.0",
 ]

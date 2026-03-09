@@ -1,18 +1,24 @@
 # Core
 numpy>=1.23,<2.0
-scipy>=1.9
+scipy>=1.11.0
+pandas>=2.3.3
+openpyxl>=3.1.5
 
 # Deep Learning
 torch>=2.0,<2.3
 torchvision>=0.15,<0.18
+ultralytics>=8.2.0
 
 # Vision / Geometry
 opencv-python>=4.8,<4.10
-open3d>=0.17.0,<0.20.0
+open3d>=0.18.0,<0.20.0
+
+# Optimization
+g2o-python==0.0.12
 
 # Utilities
-tqdm>=4.65
-pyyaml>=6.0
+tqdm>=4.67.2
+pyyaml>=6.0.3
 
 # Logging / Visualization
 tensorboard>=2.12
