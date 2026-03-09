@@ -1,4 +1,8 @@
+import logging
 import numpy as np
+
+logger = logging.getLogger(__name__)
+
 
 class MapPoint:
     """
@@ -83,7 +87,7 @@ class Map:
         for mp_id in bad_mp_ids:
             del self.map_points[mp_id]
             
-        print(f"[Map Culling] Removed {len(bad_mp_ids)} bad MapPoints. Remaining active: {len(self.map_points)}")
+        logger.info("[Map Culling] Removed %d bad MapPoints. Remaining active: %d", len(bad_mp_ids), len(self.map_points))
         return len(bad_mp_ids)
 
     def get_map_point(self, mp_id):

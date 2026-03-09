@@ -105,6 +105,12 @@ ba:
   reprojection_weight: 0.5
   huber_delta: 5.991
   pose_drift_threshold: 3.0
+  outlier_chi2_threshold: 5.991   # 2DOF 95% chi-squared
+  two_pass_rejection: true        # 2-pass outlier 제거
+  rotation_drift_threshold: 0.2   # 회전 drift 한도 (radian, ~11.5도)
+  adaptive_termination: false     # chi2 수렴 기반 조기 종료 (opt-in)
+  convergence_threshold: 0.01
+  min_iterations: 3
 
 loop_closure:
   min_frame_gap: 30
@@ -137,3 +143,7 @@ performance:
   local_map_limit: 0
   local_map_keyframes: 5
   local_map_projection_dist: 10.0
+
+logging:
+  csv_per_frame: false
+  csv_path: "frame_log.csv"

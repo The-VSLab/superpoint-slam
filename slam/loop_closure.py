@@ -1,8 +1,11 @@
 from dataclasses import dataclass
+import logging
 import numpy as np
 import cv2
 
 from config.slam_config import LoopClosureConfig
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -123,7 +126,7 @@ class LoopClosureManager:
                         transform[:3, 3] = -R.T @ tvec[:, 0]
 
                         scale = np.linalg.norm(transform[:3, 3])
-                        print(f"\n[LOOP FOUND (PnP)] Frame {cand['frame_idx']} <-> Curr | Inliers: {inliers} | Scale: {scale:.3f}")
+                        logger.info("[LOOP FOUND (PnP)] Frame %d <-> Curr | Inliers: %d | Scale: %.3f", cand["frame_idx"], inliers, scale)
 
                         return LoopClosureResult(
                             match_index=cand_idx,

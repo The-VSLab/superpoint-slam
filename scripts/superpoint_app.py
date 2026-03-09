@@ -1,11 +1,12 @@
 """
-SuperPoint 2D SLAM 단독 앱
-- 경로 추정 + 2D 맵 생성
+SuperPoint 3D SLAM 앱
+- 3D 포인트 클라우드 생성 + 경로 추정
 - 동영상/이미지 시퀀스 입력 지원
-- result/ 디렉토리에 자동 번호 매기기 (superpoint_01, orb_01, ...)
+- result/ 디렉토리에 자동 번호 매기기 (superpoint_3d_01, ...)
 """
 import argparse
 import copy
+import logging
 import sys
 from pathlib import Path
 
@@ -13,9 +14,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from slam.visual_slam_2d import VisualSLAM2D
 from slam.visual_slam_3d import VisualSLAM3D
-from orbslam.orb_slam_2d import ORBSLAM2D
 from config.slam_config import SLAMConfig
 
 
@@ -38,8 +37,6 @@ def get_next_subdir(output_dir, prefix):
 
 def build_parser():
     parser = argparse.ArgumentParser(description="SuperPoint SLAM")
-    parser.add_argument("--mode", type=str, default="slam", choices=["slam", "compare", "3d"], 
-                        help="slam: SuperPoint 2D | compare: SuperPoint vs ORB | 3d: 3D 포인트 클라우드")
     parser.add_argument("--input", type=str, required=True, help="동영상 또는 이미지 시퀀스 경로")
     parser.add_argument("--weights", type=str, required=True, help="SuperPoint 가중치 경로")
     parser.add_argument("--resize", nargs=2, type=int, default=None, 
@@ -127,6 +124,8 @@ def build_parser():
     # === YAML 설정 파일 ===
     parser.add_argument("--config", type=str, default=None,
                         help="YAML 설정 파일 경로 (미지정 시 기본값 사용, CLI 인자로 개별 오버라이드 가능)")
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="DEBUG 레벨 로깅 활성화 (프레임별 상세 출력)")
 
     return parser
 
@@ -220,110 +219,6 @@ def build_config(opt, parser):
     return cfg
 
 
-def run_superpoint_slam(opt):
-    """SuperPoint 2D SLAM 실행"""
-    out_dir = get_next_subdir(opt.output_dir, "superpoint")
-    
-    # 강한 그림자 억제 프리셋 적용
-    if opt.aggressive_shadow_filter:
-        opt.shadow_value_thresh = 0.38
-        opt.shadow_saturation_thresh = 0.24
-        opt.shadow_rel_dark_thresh = 0.72
-        opt.min_shadow_grad = 32
-        opt.min_shadow_local_std = 16
-        opt.top_region_ratio = 0.58
-        opt.top_region_min_grad = 52
-        opt.top_region_min_std = 20
-        print("🔥 강한 그림자 억제 프리셋 적용\n")
-    
-    print(f"\n{'='*80}")
-    print(f"🚀 SuperPoint 2D SLAM 시작")
-    print(f"{'='*80}")
-    print(f"📁 입력: {opt.input}")
-    print(f"📁 출력: {out_dir}")
-    print(f"{'='*80}\n")
-    
-    slam = VisualSLAM2D(
-        weights_path=opt.weights,
-        input_path=opt.input,
-        nn_thresh=opt.nn_thresh,
-        resize=tuple(opt.resize) if opt.resize is not None else None,
-        conf_thresh=opt.slam_conf_thresh,
-        nms_dist=opt.slam_nms_dist,
-        max_kpts=opt.max_kpts,
-        min_kpts=opt.min_kpts,
-        min_parallax_px=opt.min_parallax_px,
-        use_subpixel_refine=opt.use_subpixel_refine,
-        use_uniform_distribution=opt.use_uniform_distribution,
-        uniform_grid=tuple(opt.uniform_grid),
-        use_shadow_filter=opt.use_shadow_filter,
-        kpt_display_radius=opt.kpt_display_radius,
-        use_top_region_filter=opt.use_top_region_filter,
-        shadow_value_thresh=opt.shadow_value_thresh,
-        shadow_saturation_thresh=opt.shadow_saturation_thresh,
-        min_shadow_grad=opt.min_shadow_grad,
-        min_shadow_local_std=opt.min_shadow_local_std,
-        shadow_rel_dark_thresh=opt.shadow_rel_dark_thresh,
-        top_region_ratio=opt.top_region_ratio,
-        top_region_min_grad=opt.top_region_min_grad,
-        top_region_min_std=opt.top_region_min_std,
-        bottom_region_ratio=opt.bottom_region_ratio,
-        filter_floor=opt.filter_floor,
-        output_dir=str(out_dir),
-        show_display=opt.show_display,
-    )
-    stats = slam.process()
-
-    print(f"\n{'='*80}")
-    print(f"✅ SuperPoint 완료!")
-    print(f"{'='*80}")
-    print(f"📊 프레임: {stats.frames}")
-    print(f"⏱️  평균 처리: {stats.avg_total_ms:.1f}ms/frame")
-    print(f"🎯 특징점: {stats.avg_kpts:.0f}/frame")
-    print(f"🔗 매칭: {stats.avg_matches:.1f}/frame")
-    print(f"✨ 신뢰도: {stats.avg_inlier_ratio*100:.1f}%")
-    print(f"📍 궤적: {stats.trajectory_length:.1f}m")
-    print(f"💾 저장: {out_dir}/topdown_map.png")
-    print(f"{'='*80}\n")
-
-    return stats
-
-
-def run_orb_slam(opt):
-    """ORB SLAM 2D 실행"""
-    out_dir = get_next_subdir(opt.output_dir, "orb")
-    
-    print(f"\n{'='*80}")
-    print(f"🚀 ORB SLAM 2D 시작")
-    print(f"{'='*80}")
-    print(f"📁 입력: {opt.input}")
-    print(f"📁 출력: {out_dir}")
-    print(f"{'='*80}\n")
-    
-    orb = ORBSLAM2D(
-        input_path=opt.input,
-        resize=tuple(opt.resize) if opt.resize is not None else None,
-        output_dir=str(out_dir),
-        show_display=opt.show_display,
-    )
-    
-    stats = orb.process()
-    
-    print(f"\n{'='*80}")
-    print(f"✅ ORB 완료!")
-    print(f"{'='*80}")
-    print(f"📊 프레임: {stats.frames}")
-    print(f"⏱️  평균 처리: {stats.avg_total_ms:.1f}ms/frame")
-    print(f"🎯 특징점: {stats.avg_kpts:.0f}/frame")
-    print(f"🔗 매칭: {stats.avg_matches:.1f}/frame")
-    print(f"✨ 신뢰도: {stats.avg_inlier_ratio*100:.1f}%")
-    print(f"📍 궤적: {stats.trajectory_length:.1f}m")
-    print(f"💾 저장: {out_dir}/topdown_map.png")
-    print(f"{'='*80}\n")
-    
-    return stats
-
-
 def run_3d_slam(opt, parser):
     """SuperPoint 3D SLAM 실행 (포인트 클라우드 시각화)"""
     out_dir = get_next_subdir(opt.output_dir, "superpoint_3d")
@@ -350,7 +245,7 @@ def run_3d_slam(opt, parser):
     slam.process()
 
     print(f"\n{'='*80}")
-    print(f"✅ 3D 포인트 클라우드 및 2D 비교 맵이 생성되었습니다!")
+    print(f"✅ 3D 포인트 클라우드가 생성되었습니다!")
     print(f"{'='*80}")
     print(f"💾 포인트 클라우드: {out_dir}/final_slam_map.ply")
     print(f"💾 Top-Down 맵: {out_dir}/topdown_map.png")
@@ -361,29 +256,13 @@ def main():
     parser = build_parser()
     opt = parser.parse_args()
 
-    if opt.mode == "slam":
-        # SuperPoint 2D만 실행
-        run_superpoint_slam(opt)
-    elif opt.mode == "compare":
-        # 2D 비교: SuperPoint vs ORB
-        sp_stats = run_superpoint_slam(opt)
-        orb_stats = run_orb_slam(opt)
+    logging.basicConfig(
+        level=logging.DEBUG if opt.verbose else logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
 
-        # 비교 결과 출력
-        print(f"\n{'='*80}")
-        print(f"📊 비교 결과")
-        print(f"{'='*80}")
-        print(f"{'항목':<20} {'SuperPoint':<20} {'ORB':<20}")
-        print(f"{'-'*60}")
-        print(f"{'처리시간(ms)':<20} {sp_stats.avg_total_ms:<20.1f} {orb_stats.avg_total_ms:<20.1f}")
-        print(f"{'특징점':<20} {sp_stats.avg_kpts:<20.0f} {orb_stats.avg_kpts:<20.0f}")
-        print(f"{'매칭수':<20} {sp_stats.avg_matches:<20.1f} {orb_stats.avg_matches:<20.1f}")
-        print(f"{'신뢰도(%)':<20} {sp_stats.avg_inlier_ratio*100:<20.1f} {orb_stats.avg_inlier_ratio*100:<20.1f}")
-        print(f"{'궤적(m)':<20} {sp_stats.trajectory_length:<20.1f} {orb_stats.trajectory_length:<20.1f}")
-        print(f"{'='*60}\n")
-    elif opt.mode == "3d":
-        # 3D 포인트 클라우드 (Open3D 시각화)
-        run_3d_slam(opt, parser)
+    run_3d_slam(opt, parser)
 
 
 if __name__ == "__main__":

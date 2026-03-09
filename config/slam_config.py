@@ -143,6 +143,13 @@ class BAConfig:
     reprojection_weight: float = 0.5
     huber_delta: float = 5.991
     pose_drift_threshold: float = 3.0
+    # BA 안정성 개선
+    outlier_chi2_threshold: float = 5.991
+    two_pass_rejection: bool = True
+    rotation_drift_threshold: float = 0.2
+    adaptive_termination: bool = False
+    convergence_threshold: float = 0.01
+    min_iterations: int = 3
 
 
 @dataclass
@@ -181,6 +188,12 @@ class VizConfig:
 
 
 @dataclass
+class LoggingConfig:
+    csv_per_frame: bool = False
+    csv_path: str = "frame_log.csv"
+
+
+@dataclass
 class PerformanceConfig:
     filter_on_sp_only: bool = False
     local_map_limit: int = 0
@@ -213,6 +226,7 @@ class SLAMConfig:
     map_culling: MapCullingConfig = field(default_factory=MapCullingConfig)
     viz: VizConfig = field(default_factory=VizConfig)
     performance: PerformanceConfig = field(default_factory=PerformanceConfig)
+    logging: LoggingConfig = field(default_factory=LoggingConfig)
 
     @classmethod
     def from_yaml(cls, path: str) -> "SLAMConfig":
