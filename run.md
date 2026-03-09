@@ -1,15 +1,19 @@
-# 2D 모드 (벽 감지 포함)
+# 3D 실행 예시
 
-python .\scripts\superpoint_app.py --mode slam --input .\assets\test2.mp4 --weights .\weights\superpoint_cocoms.pth --filter_floor
+## 1 기본 실행
 
-# 3D 모드 (포인트 클라우드 시각화)
+```bash
+python scripts/superpoint_app.py --mode 3d --input assets/test2.mp4 --weights weights/v14_latest.pth
+```
 
-python .\scripts\superpoint_app.py --mode 3d --input .\assets\test2.mp4 --weights .\weights\superpoint_cocoms.pth --filter_floor
+## 2 권장 실행 (YAML + 시맨틱 필터)
 
-# 2D 비교 모드 (SuperPoint vs ORB)
+```bash
+python scripts/superpoint_app.py --mode 3d --input assets/test2.mp4 --weights weights/v14_latest.pth --config config/default.yaml --use_semantic --sp-interval 2
+```
 
-python .\scripts\superpoint_app.py --mode compare --input .\assets\test2.mp4 --weights .\weights\superpoint_cocoms.pth --filter_floor
+## 출력 위치
 
-# 3D 모드
-
-python scripts/superpoint_app.py --mode 3d --input assets/test2.mp4 --weights weights/v14_latest.pth --config config/default.yaml --use_semantic --yolo-model yolov8n.pt --yolo-conf 0.3 --yolo-classes 0 1 2 3 5 7 --sp-interval 2
+- `result/superpoint_3d_XX/final_slam_map.ply`
+- `result/superpoint_3d_XX/topdown_map.png`
+- `result/superpoint_3d_XX/trajectory_xy.txt`

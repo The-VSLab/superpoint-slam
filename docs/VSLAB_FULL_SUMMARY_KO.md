@@ -1,11 +1,5 @@
 # VSLab MobileNet-SuperPoint SLAM 통합 기술 문서
 
-본 문서는 다음 자료를 바탕으로 VSLab 프로젝트의 핵심 내용을 하나로 통합해 정리한 문서입니다.
-
-- `README.md`
-- `vslab_pipeline_overview.md`
-- `v14_training_report.md`
-
 목표는 다음 3가지입니다.
 
 1. 프로젝트의 기술 구조를 한눈에 이해할 수 있게 정리
@@ -43,7 +37,7 @@ VSLab은 기존 ORB-SLAM 계열 파이프라인의 프론트엔드를 경량 딥
 - 동적 객체 필터: YOLO 기반 Semantic Filtering (`tracking/semantic_filter.py`)
 - 포인트 품질 필터: 하늘/그림자/불안정 포인트 제거 (`tracking/point_filter.py`)
 - SLAM 본체:
-  - 2D/3D Visual SLAM (`slam/visual_slam_2d.py`, `slam/visual_slam_3d.py`)
+  - 3D Visual SLAM (`slam/visual_slam_3d.py`)
   - 루프 클로저 (`slam/loop_closure.py`)
 
 ### 2.2 전체 데이터 흐름
@@ -212,25 +206,22 @@ uv sync
 pip install -r requirements.txt
 ```
 
-모듈 경로 인식 조건:
-
-- 프로젝트 루트에서 실행
-- 또는 `PYTHONPATH=.` 설정
-
 ### 6.2 CLI 실행
 
 ```bash
-# Demo
-python scripts/superpoint_app.py --mode demo --input <IMG_DIR|VIDEO|camera> --weights <WEIGHTS_PATH>
+# 3D SLAM (기본)
+python scripts/superpoint_app.py --mode 3d --input <VIDEO_PATH> --weights <WEIGHTS_PATH>
 
-# SLAM
-python scripts/superpoint_app.py --mode slam --input <VIDEO_PATH> --weights <WEIGHTS_PATH> --resize 640 480
+# 3D SLAM (권장)
+python scripts/superpoint_app.py --mode 3d --input <VIDEO_PATH> --weights <WEIGHTS_PATH> --config config/default.yaml --use_semantic
 ```
 
 출력:
 
-- Demo + `--save_npy`: `npy_outputs/`
-- SLAM 결과 맵: `path_final/final_slam_map.ply`
+- 실행 결과 디렉토리: `result/superpoint_3d_XX/`
+- 포인트 클라우드: `final_slam_map.ply`
+- 탑다운 맵: `topdown_map.png`
+- 2D 궤적: `trajectory_xy.txt`
 
 ---
 
@@ -242,7 +233,7 @@ python scripts/superpoint_app.py --mode slam --input <VIDEO_PATH> --weights <WEI
 - `frontend/`: 특징점 추출 프론트엔드
 - `tracking/`: 추적/필터링 모듈
 - `matcher_module/`: 디스크립터 매칭 로직
-- `slam/`: 2D/3D SLAM, 루프클로저, 맵 관리
+- `slam/`: 3D SLAM, 루프클로저, 맵 관리
 - `learning/`: 학습 스크립트 및 학습 설정
 - `scripts/`: 실행 진입점 및 평가 스크립트
 - `weights/`: 학습된 모델 가중치
