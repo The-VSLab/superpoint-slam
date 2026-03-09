@@ -12,6 +12,12 @@ python scripts/superpoint_app.py --input assets/test2.mp4 --weights weights/v14_
 python scripts/superpoint_app.py --input assets/test2.mp4 --weights weights/v14_latest.pth --config config/default.yaml --use_semantic --sp-interval 2
 ```
 
+## 3 최적 실행 (밸런스) -> ratio_thresh 0.8 수정
+
+```bash
+uv run python scripts/superpoint_app.py --input /Users/kwon-yuhyun/Documents/capstone/test2.mp4 --weights weights/v14_latest.pth --config config/default.yaml --use_semantic --sp-interval 2 --slam_conf_thresh 0.01 --nn_thresh 0.8
+```
+
 ## 출력 위치
 
 - `result/superpoint_3d_XX/final_slam_map.ply`

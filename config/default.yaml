@@ -25,11 +25,12 @@ clahe:
 
 matcher:
   mutual: true
-  ratio_thresh: 0.85
+  ratio_thresh: 0.80
 
 semantic:
   enabled: false
   yolo_conf: 0.3
+  half: true                             # YOLO FP16 추론
   dynamic_classes: [0, 1, 2, 3, 5, 7]
 
 point_filter:

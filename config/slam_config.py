@@ -50,6 +50,7 @@ class MatcherConfig:
 class SemanticConfig:
     enabled: bool = False
     yolo_conf: float = 0.3
+    half: bool = True
     dynamic_classes: List[int] = field(default_factory=lambda: [0, 1, 2, 3, 5, 7])
 
 

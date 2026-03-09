@@ -49,6 +49,7 @@ wheels/
 *.egg-info
 .pytest_cache/
 .ipynb_checkpoints/
+.idea/
 
 # Virtual environments
 .venv/
@@ -62,6 +63,7 @@ results/
 
 # AI Context
 AGENTS.md
+.claude/
 
 # OS & IDE
 .DS_Store

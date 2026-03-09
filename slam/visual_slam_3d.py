@@ -5,7 +5,7 @@ import numpy as np
 import cv2
 import torch
 import open3d as o3d
-import  g2o
+import g2o
 import os
 import time
 import sys
@@ -20,49 +20,8 @@ from tracking.point_filter import PointFilter
 from tracking.semantic_filter import SemanticFilter
 from slam.map_elements import Map, MapPoint, KeyFrame
 from slam.bundle_adjustment import run_bundle_adjustment, BAResult
+from slam.slam_utils import get_optimal_device, create_camera_frustum, get_height_color
 from config.slam_config import SLAMConfig
-
-# --- 환경별 장치 자동 설정 함수 추가 ---
-def get_optimal_device():
-    """
-    NVIDIA GPU(CUDA), Apple Silicon(MPS), CPU 중 최적의 장치를 반환
-    """
-    if torch.cuda.is_available():
-        return "cuda"
-    elif torch.backends.mps.is_available():
-        return "mps"
-    else:
-        return "cpu"
-
-def create_camera_frustum(scale=1.0, color=[0, 0, 1]):
-    """카메라 위치를 나타내는 피라미드(Frustum) 생성"""
-    points = [
-        [0, 0, 0],  # 0: Camera Center (Tip)
-        [-scale, -scale, scale*2], # 1: Top-Left
-        [scale, -scale, scale*2],  # 2: Top-Right
-        [scale, scale, scale*2],   # 3: Bottom-Right
-        [-scale, scale, scale*2]   # 4: Bottom-Left
-    ]
-    lines = [
-        [0, 1], [0, 2], [0, 3], [0, 4], # Tip to corners
-        [1, 2], [2, 3], [3, 4], [4, 1]  # Base rectangle
-    ]
-    line_set = o3d.geometry.LineSet()
-    line_set.points = o3d.utility.Vector3dVector(points)
-    line_set.lines = o3d.utility.Vector2iVector(lines)
-    line_set.paint_uniform_color(color)
-    return line_set
-
-def get_height_color(y_vals, y_min=-5.0, y_max=2.0):
-    """높이 기반 컬러링 (Jet Style)"""
-    y_vals = np.atleast_1d(y_vals)
-    norm = np.clip((y_vals - y_min) / (y_max - y_min), 0.0, 1.0)
-    colors = np.zeros((len(y_vals), 3))
-    # Jet Colormap Approximation
-    colors[:, 0] = np.clip(1.5 - np.abs(4.0 * norm - 3.0), 0.0, 1.0) # R
-    colors[:, 1] = np.clip(1.5 - np.abs(4.0 * norm - 2.0), 0.0, 1.0) # G
-    colors[:, 2] = np.clip(1.5 - np.abs(4.0 * norm - 1.0), 0.0, 1.0) # B
-    return colors
 
 class VisualSLAM3D:
     def __init__(
@@ -165,12 +124,13 @@ class VisualSLAM3D:
             tileGridSize=tuple(c.clahe.tile_grid_size)
         )
 
-        # Semantic Filter
+        # Semantic Filter (FP16 + sp_interval 주기 실행)
         self.use_semantic = c.semantic.enabled
         if self.use_semantic:
-            self.semantic_filter = SemanticFilter(conf_thresh=c.semantic.yolo_conf)
+            self.semantic_filter = SemanticFilter(conf_thresh=c.semantic.yolo_conf, half=c.semantic.half)
         else:
             self.semantic_filter = None
+        self._cached_dyn_mask = None
         self.matcher = BTMatcher(
             nn_thresh=c.superpoint.nn_thresh,
             use_cuda=self.use_cuda,
@@ -318,12 +278,13 @@ class VisualSLAM3D:
                 else:
                     img_sp = img_masked
 
-                # Semantic Filter (Dynamic Object Masking) - 사전 준비
+                # Semantic Filter (Dynamic Object Masking)
+                # YOLO는 SP 추론 프레임에서만 실행, OF 프레임에서는 캐시된 mask 재사용
                 dyn_mask = None
                 if self.use_semantic and self.semantic_filter is not None and self.semantic_filter.enabled:
-                    # Resize original colored frame for YOLO
                     frame_resized = cv2.resize(frame, (self.W, self.H))
                     dyn_mask = self.semantic_filter.get_dynamic_mask(frame_resized)
+                    self._cached_dyn_mask = dyn_mask
 
                 img_fe = (img_sp.astype(np.float32) / 255.0)
 
@@ -430,6 +391,13 @@ class VisualSLAM3D:
 
             if not run_infer and flow_p2 is not None:
                 kpts = flow_p2
+                # OF 프레임: 캐시된 dyn_mask로 동적 객체 제거
+                if self._cached_dyn_mask is not None and len(kpts) > 0:
+                    kpts_int = kpts.astype(int)
+                    kx = np.clip(kpts_int[:, 0], 0, self.W - 1)
+                    ky = np.clip(kpts_int[:, 1], 0, self.H - 1)
+                    valid_mask = ~self._cached_dyn_mask[ky, kx]
+                    kpts = kpts[valid_mask]
 
             if self.prev_frame is None:
                 self.prev_frame, self.prev_kpts, self.prev_desc = img_gray, kpts, desc
@@ -1067,9 +1035,15 @@ class VisualSLAM3D:
             self._csv_file.close()
             logger.info("Per-frame CSV saved to: %s", os.path.join(self.save_dir, self.cfg.logging.csv_path))
         
-        # Global Bundle Adjustment 실행 (최종 맵 최적화)
-        self.run_global_ba()
-        
+        # Pose Graph Optimization만 실행 (GBA는 단안 스케일 드리프트로 비활성화)
+        self.optimize_pose_graph()
+
+        # PGO 후 Y축 높이 클리핑 (평지 주행 가정)
+        for i in range(len(self.keyframes)):
+            self.keyframes[i][1, 3] = np.clip(self.keyframes[i][1, 3], *self.cfg.stabilization.y_clip)
+        for kf_id, kf in self.map.keyframes.items():
+            kf.pose[1, 3] = np.clip(kf.pose[1, 3], *self.cfg.stabilization.y_clip)
+
         self.print_perf_summary()
         self.visualize_final_result()
 
@@ -1131,7 +1105,7 @@ class VisualSLAM3D:
         optimizer.set_algorithm(algorithm)
         return optimizer
 
-    def _run_ba(self, kf_ids, num_iterations=10, fix_first=True):
+    def _run_ba(self, kf_ids, num_iterations=10, fix_first=True, two_pass=None):
         """BA thin wrapper → slam.bundle_adjustment 모듈 호출"""
         result = run_bundle_adjustment(
             slam_map=self.map,
@@ -1142,6 +1116,7 @@ class VisualSLAM3D:
             keyframe_indices=self.keyframe_indices,
             num_iterations=num_iterations,
             fix_first=fix_first,
+            two_pass=two_pass,
         )
         if result is not None:
             self.ba_result = result
@@ -1160,7 +1135,7 @@ class VisualSLAM3D:
         if len(all_kf_ids) < 2:
             return
         logger.info("Running Global Bundle Adjustment...")
-        self._run_ba(all_kf_ids, num_iterations=self.cfg.ba.global_iterations, fix_first=True)
+        self._run_ba(all_kf_ids, num_iterations=self.cfg.ba.global_iterations, fix_first=True, two_pass=False)
 
         # GBA 후 전체 키프레임 Y축 높이 강제 클리핑 (평지 주행 가정)
         for i in range(len(self.keyframes)):

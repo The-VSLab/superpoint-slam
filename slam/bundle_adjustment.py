@@ -4,8 +4,8 @@ g2o를 이용한 키프레임 포즈 최적화 (MapPoint는 고정).
 visual_slam_3d.py와 visual_slam_drone.py에서 공통으로 사용.
 """
 import logging
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from dataclasses import dataclass
+from typing import List, Optional
 
 import g2o
 import numpy as np
@@ -49,6 +49,7 @@ def run_bundle_adjustment(
     keyframe_indices: list,
     num_iterations: int = 10,
     fix_first: bool = True,
+    two_pass: bool | None = None,
 ) -> Optional[BAResult]:
     """
     Bundle Adjustment 핵심 엔진.
@@ -68,6 +69,8 @@ def run_bundle_adjustment(
         BAResult 또는 None (최적화 불가 시)
     """
     cfg = ba_config
+    if two_pass is None:
+        two_pass = cfg.two_pass_rejection
     focal = K[0, 0]
     cx = K[0, 2]
     cy = K[1, 2]
@@ -184,7 +187,7 @@ def run_bundle_adjustment(
 
     # ── 5. 2-pass outlier rejection ──
     outliers_removed = 0
-    if cfg.two_pass_rejection:
+    if two_pass:
         for e in edges:
             if e.chi2() > cfg.outlier_chi2_threshold:
                 e.set_level(1)

@@ -1,20 +1,24 @@
 import cv2
 import numpy as np
+import torch
 
 class SemanticFilter:
-    def __init__(self, model_name="yolov8n.pt", conf_thresh=0.3):
+    def __init__(self, model_name="yolov8n.pt", conf_thresh=0.3, half=False):
         self.enabled = False
         self.conf_thresh = conf_thresh
+        # MPS (Apple Silicon) doesn't support FP16 upsample ops — force FP32
+        if half and not torch.cuda.is_available():
+            half = False
+        self.half = half
         try:
             from ultralytics import YOLO
-            # Load YOLOv8 model
             self.model = YOLO(model_name)
             self.enabled = True
-            print(f"==> YOLOv8 Loaded for Semantic SLAM ({model_name})")
+            print(f"==> YOLOv8 Loaded for Semantic SLAM ({model_name}, half={half})")
         except ImportError:
             print("==> [Warning] ultralytics not installed. Semantic SLAM disabled.")
             print("==> To enable: pip install ultralytics")
-        
+
         # COCO class IDs for dynamic objects we want to mask
         # 0: person, 1: bicycle, 2: car, 3: motorcycle, 5: bus, 7: truck
         self.dynamic_classes = [0, 1, 2, 3, 5, 7]
@@ -31,8 +35,7 @@ class SemanticFilter:
         if not self.enabled:
             return mask
 
-        # Run inference
-        results = self.model(frame, verbose=False, conf=self.conf_thresh)
+        results = self.model(frame, verbose=False, conf=self.conf_thresh, half=self.half)
         
         if len(results) > 0:
             boxes = results[0].boxes
