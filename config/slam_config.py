@@ -216,7 +216,7 @@ class SLAMConfig:
 
     @classmethod
     def from_yaml(cls, path: str) -> "SLAMConfig":
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
         return cls._from_dict(data)
 
