@@ -1,6 +1,7 @@
 # MobileNet 기반 SuperPoint SLAM 프론트엔드
 
 ## 초록 (Abstract)
+
 본 프로젝트는 SuperPoint 기반의 시각 SLAM 프론트엔드를 경량화하기 위해,
 기존의 연산량이 큰 VGG 계열 백본을 MobileNet 구조로 대체한
 경량 SuperPoint 프론트엔드를 제안한다.
@@ -42,35 +43,42 @@ MobileNet 기반의 경량 SuperPoint 프론트엔드를 설계하고,
 
 **방법 A: `uv`를 사용하는 경우 (권장)**
 프로젝트 루트에서 다음 명령어를 실행하면 `pyproject.toml`에 정의된 최적의 패키지 환경이 자동으로 구축됩니다.
+
 ```bash
 uv sync
 ```
 
 **방법 B: `pip`를 사용하는 경우**
 가상환경을 활성화한 후 `requirements.txt`를 통해 설치합니다.
+
 ```bash
 pip install -r requirements.txt
 ```
 
 ### 2) 환경 변수 설정 (Environment)
+
 실행 위치에 상관없이 모듈을 인식하도록 하기 위해 다음 중 하나를 만족해야 합니다.
+
 - 프로젝트 루트에서 실행
 - `PYTHONPATH` 설정: `export PYTHONPATH=.`
 
 ---
 
-## 통합 실행 (CLI)
+## 실행 (3D 전용 CLI)
 
 ```bash
-# Demo 모드
-python scripts/superpoint_app.py --mode demo --input <IMG_DIR|VIDEO|camera> --weights <WEIGHTS_PATH>
+# 3D SLAM (기본)
+python scripts/superpoint_app.py --input <VIDEO_PATH> --weights <WEIGHTS_PATH>
 
-# SLAM 모드
-python scripts/superpoint_app.py --mode slam --input <VIDEO_PATH> --weights <WEIGHTS_PATH> --resize 640 480
+# 3D SLAM (권장: YAML 설정 + 시맨틱 필터)
+python scripts/superpoint_app.py --input <VIDEO_PATH> --weights <WEIGHTS_PATH> --config config/default.yaml --use_semantic
 ```
 
-Demo 모드에서 `--save_npy`를 쓰면 결과는 `npy_outputs/`에 저장됩니다.  
-SLAM 모드 결과는 `path_final/final_slam_map.ply`로 저장됩니다.
+3D 실행 결과는 기본적으로 `result/superpoint_3d_XX/` 하위에 저장됩니다.
+
+- 포인트 클라우드: `final_slam_map.ply`
+- 탑다운 맵: `topdown_map.png`
+- 2D 궤적: `trajectory_xy.txt`
 
 ---
 
@@ -124,7 +132,7 @@ Tracking, Pose Estimation, Bundle Adjustment, Mapping은
 → MobileNet-SuperPoint (특징점 및 기술자 추출)  
 → 실수형 기술자 매칭  
 → ORB-SLAM Tracking 및 초기화  
-→ 카메라 자세 추정 및 지도 생성  
+→ 카메라 자세 추정 및 지도 생성
 
 ---
 
@@ -156,11 +164,11 @@ Tracking, Pose Estimation, Bundle Adjustment, Mapping은
 기존 ORB-SLAM 프론트엔드의 성능을 비교한다.
 비교 평가는 동일한 데이터셋과 환경에서 수행되었다.
 
-| 방법 | 특징점 종류 | 평균 FPS | 프레임당 처리 시간 (ms) | 궤적 오차 (ATE, m) | 신뢰도 (Inlier Ratio) | 임베디드 실시간성 |
-|-----|------------|----------|--------------------------|-------------------|----------------------|------------------|
-| ORB-SLAM (Baseline) | ORB | 9.6 | 104 | 0.27 | 낮음 | 가능 |
-| SuperPoint (원본) | SuperPoint (VGG) | 2.5 | 400 | **0.18** | 매우 높음 | 불가능 |
-| **제안 방법** | **MobileNet-SuperPoint (Phase 2)** | **5.0 ~ 9.0** | **160 ~ 210** | **평가 예정** | **~55% (매우 높음)** | 가능 |
+| 방법                | 특징점 종류                        | 평균 FPS      | 프레임당 처리 시간 (ms) | 궤적 오차 (ATE, m) | 신뢰도 (Inlier Ratio) | 임베디드 실시간성 |
+| ------------------- | ---------------------------------- | ------------- | ----------------------- | ------------------ | --------------------- | ----------------- |
+| ORB-SLAM (Baseline) | ORB                                | 9.6           | 104                     | 0.27               | 낮음                  | 가능              |
+| SuperPoint (원본)   | SuperPoint (VGG)                   | 2.5           | 400                     | **0.18**           | 매우 높음             | 불가능            |
+| **제안 방법**       | **MobileNet-SuperPoint (Phase 2)** | **5.0 ~ 9.0** | **160 ~ 210**           | **평가 예정**      | **~55% (매우 높음)**  | 가능              |
 
 ※ FPS 및 처리 시간은 Python 구동 (단일 카메라) 기준 평균값이며, C++ 및 TensorRT 포팅 시 실시간(30FPS+) 달성이 목표이다.
 ATE는 공개 데이터셋에서의 평균 절대 궤적 오차를 의미한다.
@@ -187,6 +195,7 @@ KITTI 데이터를 이용한 **지도학습 스크립트**는 `scripts/train_sup
 자세한 내용은 `docs/TRAINING_KO.md`를 참고하세요.
 
 간단 실행 예시:
+
 ```bash
 python scripts/train_synthetic.py \
   --data_dir train_data/seq01 \

@@ -1,9 +1,13 @@
+<<<<<<< HEAD
 """
 SuperPoint 3D SLAM 앱
 - 3D 포인트 클라우드 생성 + 경로 추정
 - 동영상/이미지 시퀀스 입력 지원
 - result/ 디렉토리에 자동 번호 매기기 (superpoint_3d_01, ...)
 """
+=======
+"""SuperPoint 3D SLAM 실행 앱."""
+>>>>>>> 2d_제거
 import argparse
 import copy
 import logging
@@ -37,6 +41,11 @@ def get_next_subdir(output_dir, prefix):
 
 def build_parser():
     parser = argparse.ArgumentParser(description="SuperPoint SLAM")
+<<<<<<< HEAD
+=======
+    parser.add_argument("--mode", type=str, default="3d", choices=["3d"],
+                        help="3d: 3D 포인트 클라우드")
+>>>>>>> 2d_제거
     parser.add_argument("--input", type=str, required=True, help="동영상 또는 이미지 시퀀스 경로")
     parser.add_argument("--weights", type=str, required=True, help="SuperPoint 가중치 경로")
     parser.add_argument("--resize", nargs=2, type=int, default=None, 
@@ -256,12 +265,16 @@ def main():
     parser = build_parser()
     opt = parser.parse_args()
 
+<<<<<<< HEAD
     logging.basicConfig(
         level=logging.DEBUG if opt.verbose else logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
 
+=======
+    # 3D 포인트 클라우드 (Open3D 시각화)
+>>>>>>> 2d_제거
     run_3d_slam(opt, parser)
 
 

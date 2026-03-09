@@ -5,7 +5,7 @@ import numpy as np
 import cv2
 import torch
 import open3d as o3d
-import g2o
+import  g2o
 import os
 import time
 import sys
