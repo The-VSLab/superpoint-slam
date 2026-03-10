@@ -210,10 +210,10 @@ pip install -r requirements.txt
 
 ```bash
 # 3D SLAM (기본)
-python scripts/superpoint_app.py --mode 3d --input <VIDEO_PATH> --weights <WEIGHTS_PATH>
+uv run python scripts/superpoint_app.py --input <VIDEO_PATH> --weights <WEIGHTS_PATH> --config config/default.yaml
 
 # 3D SLAM (권장)
-python scripts/superpoint_app.py --mode 3d --input <VIDEO_PATH> --weights <WEIGHTS_PATH> --config config/default.yaml --use_semantic
+uv run python scripts/superpoint_app.py --input <VIDEO_PATH> --weights <WEIGHTS_PATH> --config config/default.yaml --use_semantic
 ```
 
 출력:

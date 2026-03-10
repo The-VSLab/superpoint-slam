@@ -3,19 +3,19 @@
 ## 1 기본 실행
 
 ```bash
-python scripts/superpoint_app.py --input assets/test2.mp4 --weights weights/v14_latest.pth
+python scripts/superpoint_app.py --input your_video.mp4 --weights weights/v14_latest.pth
 ```
 
 ## 2 권장 실행 (YAML + 시맨틱 필터)
 
 ```bash
-python scripts/superpoint_app.py --input assets/test2.mp4 --weights weights/v14_latest.pth --config config/default.yaml --use_semantic --sp-interval 2
+python scripts/superpoint_app.py --input your_video.mp4 --weights weights/v14_latest.pth --config config/default.yaml --use_semantic --sp-interval 2
 ```
 
-## 3 최적 실행 (밸런스) -> ratio_thresh 0.8 수정
+## 3 최적 실행 (밸런스 및 그림자 필터 강화)
 
 ```bash
-uv run python scripts/superpoint_app.py --input /Users/kwon-yuhyun/Documents/capstone/test2.mp4 --weights weights/v14_latest.pth --config config/default.yaml --use_semantic --sp-interval 2 --slam_conf_thresh 0.01 --nn_thresh 0.8
+uv run python scripts/superpoint_app.py --input your_video.mp4 --weights weights/v14_latest.pth --config config/default.yaml --use_semantic --sp-interval 2 --aggressive_shadow_filter --slam_conf_thresh 0.01
 ```
 
 ## 출력 위치

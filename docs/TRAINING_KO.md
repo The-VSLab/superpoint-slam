@@ -54,7 +54,7 @@ checkpoints/superpoint_base_synthetic.pth
 ## 5) 결과 적용
 학습한 가중치를 기존 파이프라인에 넣으면 됩니다.
 ```bash
-python scripts/superpoint_app.py --mode slam --input your_video.mp4 --weights checkpoints/superpoint_base_synthetic.pth
+uv run python scripts/superpoint_app.py --input your_video.mp4 --weights checkpoints/superpoint_base_synthetic.pth --config config/default.yaml
 ```
 결과는 `path_final/final_slam_map.ply`로 저장됩니다.
 

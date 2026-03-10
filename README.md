@@ -4,13 +4,12 @@
 
 본 프로젝트는 SuperPoint 기반의 시각 SLAM 프론트엔드를 경량화하기 위해,
 기존의 연산량이 큰 VGG 계열 백본을 MobileNet 구조로 대체한
-경량 SuperPoint 프론트엔드를 제안한다.
-제안한 프론트엔드는 ORB-SLAM에서 사용되는 ORB 기반 특징점 추출 및 매칭
-모듈을 대체하도록 설계되었으며,
-기존 SLAM 백엔드(Tracking, Pose Estimation, Bundle Adjustment, Mapping)는
-변경하지 않고 유지한다.
+경량 SuperPoint 프론트엔드를 기반으로 하는 Python 3D 시각 SLAM 시스템을 제안한다.
+제안한 프론트엔드는 ORB-SLAM에서 사용되는 기반 특징점 추출 모듈을 대체하도록 설계되었으며,
+Optical Flow 기반 추적, g2o를 통한 Bundle Adjustment 및 Sim3 Pose Graph Optimization 등
+Python 친화적이고 독자적인 SLAM 백엔드를 갖추고 있다.
 이를 통해 복잡한 환경에서도 향상된 강인성과
-임베디드 환경에서의 실시간 처리 가능성을 동시에 확보하는 것을 목표로 한다.
+임베디드 및 자율주행 환경(예: 그림자 억제, 하늘 및 시맨틱 동적 객체 마스킹)에 최적화된 프론트엔드를 시연한다.
 
 ---
 
@@ -27,9 +26,10 @@ SuperPoint는 딥러닝 기반 특징점 검출 및 기술자 추출 기법으�
 임베디드 및 실시간 SLAM 환경에 적용하기에는
 연산량 측면에서 한계가 있다.
 
-본 프로젝트에서는 이러한 문제를 해결하기 위해
+이에 본 프로젝트에서는
 MobileNet 기반의 경량 SuperPoint 프론트엔드를 설계하고,
-이를 ORB-SLAM의 프론트엔드로 통합하는 방안을 제시한다.
+Python 환경에서 독자적인 SLAM 백엔드 파이프라인(Optical Flow 트래킹 + g2o BA/PGO)을 구축하여,
+높은 강인성과 유연한 실험이 가능한 SLAM 환경을 제공한다.
 
 ---
 
@@ -115,24 +115,25 @@ python scripts/superpoint_app.py --input <VIDEO_PATH> --weights <WEIGHTS_PATH> -
 
 ## 4. 시스템 통합 (System Integration)
 
-### 4.1 SLAM 프론트엔드 대체 구조
+### 4.1 SLAM 파이프라인 구조
 
-제안한 시스템은 ORB-SLAM의 프론트엔드를 다음과 같이 대체한다.
+제안한 시스템은 고전적인 ORB-SLAM의 복잡한 C++ 의존성을 벗어나 Python 환경에서 다음과 같이 구성된다.
 
-- ORBextractor → MobileNet 기반 SuperPoint 특징점 추출기
-- ORBmatcher → L2 거리 기반 실수형 기술자 매칭기
-
-SLAM의 백엔드 구성 요소인
-Tracking, Pose Estimation, Bundle Adjustment, Mapping은
-기존 ORB-SLAM 구조를 그대로 유지한다.
+- **프론트엔드 (Frontend)**: MobileNet 기반 SuperPoint 특징점 추출 + 환경 (그림자/하늘/선형 객체) 강제 마스킹 필터
+- **트래킹 (Tracking)**: Lucas-Kanade Optical Flow 기반 희소 매칭 및 SuperPoint 디스크립터 유사도 검증
+- **백엔드 (Backend & Mapping)**: g2o 기반 Local/Global Bundle Adjustment (BA), 핵심 키프레임 기반 카메라 자세 및 MapPoint 최적화
+- **루프 탐지 (Loop Closure)**: 전역 기술자 검색 및 g2o Sim3 Pose Graph Optimization (PGO)를 통한 스케일 드리프트 교정
 
 ### 4.2 전체 시스템 파이프라인
 
 입력 영상  
-→ MobileNet-SuperPoint (특징점 및 기술자 추출)  
-→ 실수형 기술자 매칭  
-→ ORB-SLAM Tracking 및 초기화  
-→ 카메라 자세 추정 및 지도 생성
+→ HSV/Gradient 혼합 그림자 및 ROI 필터 (다중 마스킹 적용)  
+→ MobileNet-SuperPoint (특징점 및 256차원 실수형 기술자 추출)  
+→ Optical Flow 트래킹 및 기술자 L2 매칭 융합  
+→ PnP, RANSAC 기반 Pose Estimation 및 Keyframe 선정  
+→ Local MAP 구성 및 Bundle Adjustment (g2o)  
+→ Loop Closure 탐지 밎 Sim3 Pose Graph Optimization  
+→ 최종 3D 맵 (Point Cloud) 도출 및 2D 궤적 기록
 
 ---
 
@@ -160,9 +161,12 @@ Tracking, Pose Estimation, Bundle Adjustment, Mapping은
 
 ### 6.1 성능 비교 (Performance Comparison)
 
-본 절에서는 제안한 MobileNet 기반 SuperPoint 프론트엔드와
-기존 ORB-SLAM 프론트엔드의 성능을 비교한다.
-비교 평가는 동일한 데이터셋과 환경에서 수행되었다.
+최근 업데이트를 통해, ORB-SLAM 프론트엔드 교체 방식을 넘어서 Python 전용 백엔드를 직접 탑재하고 고도화하였다.
+- 그림자 억제(`aggressive_shadow_filter`) 및 동적 시맨틱 객체 필터 적용.
+- `g2o` 포즈 그래프 최적화를 도입하여 스케일 관리에 취약한 모노큘러 SLAM의 **스케일 드리프트 현상을 크게 개선**.
+- Optical flow와 프레임 스킵 모드(`--sp-interval`) 결합으로 파이썬 환경의 제약하에서도 향상된 최적화 성능 확보.
+
+본 데이터는 제안한 MobileNet 기반 SuperPoint 프론트엔드와 기존 프론트엔드의 성능을 비교한다.
 
 | 방법                | 특징점 종류                        | 평균 FPS      | 프레임당 처리 시간 (ms) | 궤적 오차 (ATE, m) | 신뢰도 (Inlier Ratio) | 임베디드 실시간성 |
 | ------------------- | ---------------------------------- | ------------- | ----------------------- | ------------------ | --------------------- | ----------------- |
@@ -171,10 +175,7 @@ Tracking, Pose Estimation, Bundle Adjustment, Mapping은
 | **제안 방법**       | **MobileNet-SuperPoint (Phase 2)** | **5.0 ~ 9.0** | **160 ~ 210**           | **평가 예정**      | **~55% (매우 높음)**  | 가능              |
 
 ※ FPS 및 처리 시간은 Python 구동 (단일 카메라) 기준 평균값이며, C++ 및 TensorRT 포팅 시 실시간(30FPS+) 달성이 목표이다.
-ATE는 공개 데이터셋에서의 평균 절대 궤적 오차를 의미한다.
-
-※ 상기 수치는 초기 실험 결과를 기반으로 하며,
-최종 성능 평가는 향후 추가 실험을 통해 보완될 예정이다.
+ATE는 공개 데이터셋에서의 평균 절대 궤적 오차를 의미한다. 상기 수치는 초기 실험 결과를 기반으로 하며 향후 보완될 예정이다.
 
 ---
 
