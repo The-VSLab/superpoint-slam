@@ -134,8 +134,8 @@ class VisualSLAM3D:
         self.matcher = BTMatcher(
             nn_thresh=c.superpoint.nn_thresh,
             use_cuda=self.use_cuda,
-            mutual=c.matcher.mutual,
-            ratio_thresh=c.matcher.ratio_thresh
+            mutual=True,  # 반드시 True로 강제 (또는 c.matcher.mutual 확인)
+            ratio_thresh=0.85 # Lowe's Ratio test 강화
         )
         self.loop_closure = LoopClosureManager(
             matcher=self.matcher,
@@ -567,8 +567,10 @@ class VisualSLAM3D:
                 if len(obj_pts) >= self.cfg.pnp.min_points:
                     success, rvec, tvec_pnp, inliers_pnp = cv2.solvePnPRansac(
                         obj_pts, img_pts, self.K, None,
-                        flags=cv2.SOLVEPNP_ITERATIVE,
-                        reprojectionError=self.cfg.pnp.reprojection_error
+                        flags=cv2.USAC_MAGSAC,  # 최신 RANSAC 적용
+                        reprojectionError=self.cfg.pnp.reprojection_error,
+                        confidence=0.999,
+                        iterationsCount=1000 # 필요시 추가
                     )
 
                     if success and inliers_pnp is not None and len(inliers_pnp) > self.cfg.pnp.min_inliers:

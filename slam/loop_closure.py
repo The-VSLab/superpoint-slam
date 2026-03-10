@@ -79,7 +79,7 @@ class LoopClosureManager:
     def _global_descriptor(self, desc):
         if desc is None or desc.size == 0:
             return None
-        gdesc = np.mean(desc, axis=1)
+        gdesc = np.max(desc, axis=1)
         norm = np.linalg.norm(gdesc)
         if norm < 1e-6:
             return None
