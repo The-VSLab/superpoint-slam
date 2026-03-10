@@ -204,10 +204,10 @@ class SuperPointFrontend(object):
         # 점 개수 제한
         if self.max_keypoints > 0 and pts.shape[1] > self.max_keypoints:
             pts = pts[:, :self.max_keypoints]
-        # --- 디스크립터 처리
+        # --- 디스크립터 처리 (GPU 텐서 상태 유지 — Matcher까지 CPU 전환 없이 전달)
         D = coarse_desc.shape[1]
         if pts.shape[1] == 0:
-            desc = np.zeros((D, 0))
+            desc = torch.zeros((D, 0), device=self.device)
         else:
             # 2D 점 위치를 사용하여 디스크립터 맵에 보간
             # align_corners=True일 때 올바른 매핑 식: (coord / (size - 1)) * 2 - 1
@@ -224,6 +224,7 @@ class SuperPointFrontend(object):
                 coarse_desc = coarse_desc.to(self.device)
 
             desc = F.grid_sample(coarse_desc, samp_pts, align_corners=True)
-            desc = desc.detach().cpu().numpy().reshape(D, -1)
-            desc /= np.linalg.norm(desc, axis=0, keepdims=True)
+            desc = desc.detach().reshape(D, -1)
+            # L2 정규화 (GPU에서 수행)
+            desc = desc / (torch.norm(desc, dim=0, keepdim=True) + 1e-8)
         return pts, desc, heatmap

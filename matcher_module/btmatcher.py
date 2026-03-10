@@ -20,13 +20,18 @@ class BTMatcher:
         self.mutual = mutual
         self.ratio_thresh = ratio_thresh
         self.use_cuda = use_cuda and torch.cuda.is_available()
-        self.device = torch.device("cuda" if self.use_cuda else "cpu")
+        # CUDA만 GPU 매칭 활성화 (MPS는 소규모 행렬 연산 시 커널 디스패치 오버헤드로 CPU보다 느림)
+        if self.use_cuda:
+            self.device = torch.device("cuda")
+        else:
+            self.device = torch.device("cpu")
 
     def match(self, desc1, desc2):
         """
-        [수정됨] 불필요한 kpts 인자를 제거하고 desc1, desc2만 받습니다.
+        GPU 텐서를 직접 받으면 CPU 전환 없이 GPU에서 매칭 수행.
+        numpy 입력도 호환됩니다.
         Args:
-            desc1: [256, N1] (Descriptor)
+            desc1: [256, N1] (Descriptor) — numpy array 또는 torch.Tensor
             desc2: [256, N2]
         Returns:
             matches: [M, 2] numpy array
@@ -35,64 +40,64 @@ class BTMatcher:
         if desc1.shape[1] == 0 or desc2.shape[1] == 0:
             return np.empty((0, 2), dtype=int)
 
-        # 2. Numpy -> Tensor 변환 및 Device 이동
+        # 2. Tensor 변환 (numpy면 변환, 이미 tensor면 dtype만 맞춤)
         if isinstance(desc1, np.ndarray):
-            d1 = torch.from_numpy(desc1).float().to(self.device)
+            d1 = torch.from_numpy(desc1).float()
         else:
-            d1 = desc1.float().to(self.device)
-            
-        if isinstance(desc2, np.ndarray):
-            d2 = torch.from_numpy(desc2).float().to(self.device)
-        else:
-            d2 = desc2.float().to(self.device)
+            d1 = desc1.float()
 
-        # ==========================================================
-        # ★ 차원 전치 (Transpose) ★
-        # SuperPoint 출력 [256, N] -> 거리 계산을 위해 [N, 256]으로 변경
-        # ==========================================================
+        if isinstance(desc2, np.ndarray):
+            d2 = torch.from_numpy(desc2).float()
+        else:
+            d2 = desc2.float()
+
+        # 3. 연산 디바이스 결정: CUDA 텐서가 있으면 GPU에서 직통 매칭
+        #    (MPS는 소규모 행렬에서 커널 오버헤드가 커서 CPU가 빠름)
+        if d1.device.type == 'cuda':
+            device = d1.device
+        elif d2.device.type == 'cuda':
+            device = d2.device
+        else:
+            device = self.device
+
+        d1 = d1.to(device)
+        d2 = d2.to(device)
+
+        # ★ 차원 전치: SuperPoint 출력 [256, N] → 거리 계산용 [N, 256]
         d1 = d1.t()
         d2 = d2.t()
 
-        # 3. 효율적인 코사인 유사도 연산 (Dot Product)
-        # desc1, desc2는 이미 단위 크기(L2 normalized)로 정규화되어 있으므로 내적으로 코사인 유사도 계산
-        # d1: [N1, 256], d2: [N2, 256]. inner product를 위해 d2를 다시 transpose
+        # 4. 코사인 유사도 → 유클리드 거리 제곱 변환
         sim_mat = torch.mm(d1, d2.t())
-
-        # 코사인 유사도를 유클리드 거리 제곱(Squared Euclidean)으로 변환
-        # d^2 = 2 - 2 * cos(theta)
-        # sqrt 연산을 피하기 위해 모든 임계값을 제곱 단위로 비교합니다.
         dist_sq = torch.clamp(2.0 - 2.0 * sim_mat, min=0.0)
 
-        # 4. Nearest Neighbor Search (Lowe's Ratio Test를 위해 2개 추출)
+        # 5. Nearest Neighbor Search (Lowe's Ratio Test)
         if self.ratio_thresh < 1.0 and d2.shape[0] >= 2:
             top_dist_sq, top_idxs = torch.topk(dist_sq, k=2, dim=1, largest=False)
             min_dist_sq = top_dist_sq[:, 0]
             idxs = top_idxs[:, 0]
-            # Ratio Test: d1 < ratio * d2  ==>  d1^2 < ratio^2 * d2^2
             ratio_sq = self.ratio_thresh ** 2
             ratio_mask = (min_dist_sq < ratio_sq * top_dist_sq[:, 1])
         else:
             min_dist_sq, idxs = torch.min(dist_sq, dim=1)
             ratio_mask = torch.ones_like(min_dist_sq, dtype=torch.bool)
 
-        # 5. 매칭 필터링
+        # 6. 매칭 필터링
         nn_thresh_sq = self.nn_thresh ** 2
-        
+
         if self.mutual:
-            # 상호 매칭 (Mutual Check)
             min_dist_sq2, idxs2 = torch.min(dist_sq, dim=0)
-            match_check = (idxs2[idxs] == torch.arange(d1.shape[0], device=self.device))
+            match_check = (idxs2[idxs] == torch.arange(d1.shape[0], device=device))
             valid_mask = (min_dist_sq < nn_thresh_sq) & match_check & ratio_mask
         else:
-            # 단순 거리 임계값
             valid_mask = (min_dist_sq < nn_thresh_sq) & ratio_mask
 
-        # 6. 결과 인덱스 추출
-        idx1 = torch.arange(d1.shape[0], device=self.device)[valid_mask]
+        # 7. 결과 인덱스 추출 → CPU numpy 반환 (OpenCV/SLAM 소비용)
+        idx1 = torch.arange(d1.shape[0], device=device)[valid_mask]
         idx2 = idxs[valid_mask]
 
         matches = torch.stack([idx1, idx2], dim=1)
-        
+
         return matches.cpu().numpy().astype(int)
 
 # ==============================================================================

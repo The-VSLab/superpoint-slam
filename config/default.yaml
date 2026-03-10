@@ -1,0 +1,150 @@
+# VSLab SLAM 기본 설정
+# 모든 하이퍼파라미터의 기본값입니다. CLI 인자로 개별 값을 오버라이드할 수 있습니다.
+
+camera:
+  focal_multiplier: 0.8       # 초점거리 = max(W,H) * 이 값
+  min_dimension: 64
+  resize_target: 640
+  dashboard_mask_ratio: 0.92   # 본넷/대시보드 마스킹 (하단 비율)
+
+superpoint:
+  conf_thresh: 0.015
+  nn_thresh: 0.7
+  max_kpts: 1500
+  min_kpts: 600
+  roi_sky: 0.35
+  roi_hood: 0.85
+  sp_scale: 1.0
+  sp_interval: 1
+  sp_fp16: false
+
+clahe:
+  enabled: true
+  clip_limit: 2.0
+  tile_grid_size: [8, 8]
+
+matcher:
+  mutual: true
+  ratio_thresh: 0.80
+
+semantic:
+  enabled: false
+  yolo_conf: 0.3
+  half: true                             # YOLO FP16 추론
+  dynamic_classes: [0, 1, 2, 3, 5, 7]
+
+point_filter:
+  use_shadow_filter: true
+  use_top_region_filter: true
+  shadow_value_thresh: 0.46
+  shadow_saturation_thresh: 0.30
+  min_shadow_grad: 15.0
+  min_shadow_local_std: 8.0
+  shadow_rel_dark_thresh: 0.82
+  top_region_ratio: 0.30
+  top_region_min_grad: 25.0
+  top_region_min_std: 10.0
+
+optical_flow:
+  win_size: 21
+  max_level: 3
+  fb_thresh: 1.0
+  termination_epsilon: 0.01
+  termination_max_iter: 30
+
+pnp:
+  min_points: 15
+  min_inliers: 10
+  reprojection_error: 5.0
+  min_translation: 0.001
+  max_translation: 10.0
+  ransac_iterations: 1000
+  confidence: 0.99
+
+motion:
+  speed_jump_multiplier: 5.0
+  min_speed_thresh: 0.5
+  direction_reversal_cos: -0.5
+
+stabilization:
+  y_damping: 0.05
+  pitch_roll_damping: 0.15
+  inertia_weight: 0.4
+  y_clip: [-0.5, 0.5]
+  dead_reckoning_decay: 0.8
+  speed_history_len: 30
+
+triangulation:
+  min_depth: 0.5
+  max_depth: 150.0
+  max_x_extent: 100.0
+  max_y_extent: 20.0
+
+keyframe:
+  parallax_threshold: 30.0
+  min_gap: 5
+  max_gap: 30
+  adaptive_inlier_ratio: 0.4
+  min_adaptive_inliers: 30
+  stall_distance: 0.5
+  stall_lookback: 10
+  alignment_dist: 3.0
+  culling_interval: 5
+
+epipolar:
+  essential_threshold: 0.5
+  homography_threshold: 3.0
+  homography_selection_ratio: 0.85
+  homography_min_inliers: 15
+
+ba:
+  local_keyframes: 5
+  local_iterations: 5
+  global_iterations: 10
+  min_observations: 2
+  min_map_points: 10
+  reprojection_weight: 0.5
+  huber_delta: 5.991
+  pose_drift_threshold: 3.0
+  outlier_chi2_threshold: 5.991   # 2DOF 95% chi-squared
+  two_pass_rejection: true        # 2-pass outlier 제거
+  rotation_drift_threshold: 0.2   # 회전 drift 한도 (radian, ~11.5도)
+  adaptive_termination: false     # chi2 수렴 기반 조기 종료 (opt-in)
+  convergence_threshold: 0.01
+  min_iterations: 3
+
+loop_closure:
+  min_frame_gap: 30
+  top_k: 5
+  min_inliers: 30
+  min_inlier_ratio: 0.25
+  descriptor_similarity: 0.97
+  verify_min_inliers: 25
+  verify_min_inlier_ratio: 0.15
+  verify_min_3d_points: 15
+  verify_reprojection_error: 5.0
+
+pose_graph:
+  rotation_weight: 10.0
+  translation_weight: 1.0
+  iterations: 20
+
+map_culling:
+  min_observations: 3
+
+viz:
+  enabled: true
+  window_size: [640, 360]
+  keypoint_radius: 2
+  voxel_size: 0.1
+  point_size: 3.0
+
+performance:
+  filter_on_sp_only: false
+  local_map_limit: 0
+  local_map_keyframes: 5
+  local_map_projection_dist: 10.0
+
+logging:
+  csv_per_frame: false
+  csv_path: "frame_log.csv"

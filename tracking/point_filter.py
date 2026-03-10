@@ -1,13 +1,14 @@
 """
 포인트 필터링 모듈 - 노이즈 제거
 - 구름/하늘 필터
-- 전선/케이블 필터  
+- 전선/케이블 필터
 - 통계적 이상치 제거
 - 기하학적 일관성 필터
 """
 import cv2
 import numpy as np
 from typing import Tuple, List
+from scipy.spatial import cKDTree
 
 
 class PointFilter:
@@ -49,93 +50,78 @@ class PointFilter:
         # 하늘 영역: 파란색이거나 구름 같은 형태
         sky_mask = is_blue | is_cloud
         
-        # 특징점 위치에서 하늘 여부 확인
-        valid = np.ones(len(kpts), dtype=bool)
-        for idx, (x, y) in enumerate(kpts):
-            xi = int(np.clip(x, 0, self.frame_w - 1))
-            yi = int(np.clip(y, 0, self.frame_h - 1))
-            if sky_mask[yi, xi]:
-                valid[idx] = False
-        
+        # 특징점 위치에서 하늘 여부 확인 (벡터화)
+        kpts_int = kpts.astype(int)
+        xi = np.clip(kpts_int[:, 0], 0, self.frame_w - 1)
+        yi = np.clip(kpts_int[:, 1], 0, self.frame_h - 1)
+        valid = ~sky_mask[yi, xi]
+
         return valid
     
     def filter_lines(self, kpts: np.ndarray, desc: np.ndarray,
                     line_angle_tolerance: float = 10.0) -> np.ndarray:
-        """직선엣지/전선 필터링 (특징점 방향성 기반)
-        
+        """직선엣지/전선 필터링 (특징점 방향성 기반, cKDTree 벡터화)
+
         Args:
             kpts: 특징점 (N, 2)
             desc: 기술자 (특징점과 동일 개수)
             line_angle_tolerance: 각도 편차 임계값 (도)
-        
+
         Returns:
             필터링된 특징점 인덱스 (valid mask)
         """
+        k = 5
         if len(kpts) < 3:
             return np.ones(len(kpts), dtype=bool)
-        
-        valid = np.ones(len(kpts), dtype=bool)
-        
-        # 각 특징점 거리 정렬
-        for idx in range(len(kpts)):
-            # 같은 이웃 특징점들까지의 거리 계산
-            distances = np.linalg.norm(kpts - kpts[idx], axis=1)
-            distances[idx] = np.inf
-            
-            nearest_indices = np.argsort(distances)[:5]  # 가장 가까운 5개
-            
-            if len(nearest_indices) < 3:
-                continue
-            
-            # 이웃 점들과의 방향성 확인
-            neighbors = kpts[nearest_indices]
-            directions = neighbors - kpts[idx]
-            
-            # 모든 방향의 각도 계산
-            angles = np.arctan2(directions[:, 1], directions[:, 0]) * 180 / np.pi
-            
-            # 각도의 분산이 작으면 직선 위의 점
-            angle_std = np.std(angles)
-            
-            # 분산이 매우 작으면 (직선상) 필터링
-            if angle_std < line_angle_tolerance:
-                valid[idx] = False
-        
+
+        # cKDTree로 k+1 최근접 이웃 검색 (자기 자신 포함)
+        tree = cKDTree(kpts[:, :2])
+        _, indices = tree.query(kpts[:, :2], k=min(k + 1, len(kpts)))
+        # indices shape: (N, k+1), 첫 번째 열은 자기 자신
+        neighbor_idx = indices[:, 1:]  # (N, k) 자기 자신 제외
+
+        # 이웃 좌표 일괄 조회: (N, k, 2)
+        neighbor_pts = kpts[neighbor_idx][:, :, :2]
+        # 방향 벡터: (N, k, 2)
+        directions = neighbor_pts - kpts[:, np.newaxis, :2]
+        # 각도: (N, k)
+        angles = np.arctan2(directions[:, :, 1], directions[:, :, 0]) * (180.0 / np.pi)
+        # 각도 표준편차: (N,)
+        angle_std = np.std(angles, axis=1)
+
+        valid = angle_std >= line_angle_tolerance
+
         return valid
     
-    def filter_statistical_outliers(self, kpts: np.ndarray, 
+    def filter_statistical_outliers(self, kpts: np.ndarray,
                                    neighborhood: int = 10,
                                    std_ratio: float = 2.0) -> np.ndarray:
-        """통계적 이상치 제거 (neighborhood distance 기반)
-        
+        """통계적 이상치 제거 (cKDTree 기반 O(N log N) 탐색)
+
         Args:
             kpts: 특징점 (N, 2)
             neighborhood: 이웃 k개
             std_ratio: 표준편차 배수 (넘으면 이상치)
-        
+
         Returns:
             유효한 포인트 마스크
         """
         if len(kpts) < neighborhood:
             return np.ones(len(kpts), dtype=bool)
-        
-        # 각 점의 이웃까지 거리 계산
-        distances_all = np.linalg.norm(kpts[:, None] - kpts[None, :], axis=2)
-        
-        # 가장 가까운 k개까지의 평균 거리
-        sorted_dist = np.sort(distances_all, axis=1)
-        k_nearest_mean = np.mean(sorted_dist[:, 1:neighborhood+1], axis=1)
-        
-        # 통계 계산
+
+        # cKDTree로 k+1 최근접 이웃 거리 검색 (자기 자신 포함)
+        tree = cKDTree(kpts[:, :2])
+        dists, _ = tree.query(kpts[:, :2], k=neighborhood + 1)
+        # dists shape: (N, k+1), 첫 번째 열(자기 자신, 거리=0) 제외
+        k_nearest_mean = np.mean(dists[:, 1:], axis=1)
+
+        # 통계 기반 임계값
         mean_dist = np.mean(k_nearest_mean)
         std_dist = np.std(k_nearest_mean)
-        
-        # 임계값 설정 (mean + std_ratio * std)
         threshold = mean_dist + std_ratio * std_dist
-        
-        # 유효한 점 (거리가 임계값 이하)
+
         valid = k_nearest_mean < threshold
-        
+
         return valid
     
     def filter_low_confidence(self, kpts: np.ndarray, desc: np.ndarray,
@@ -211,21 +197,19 @@ class PointFilter:
         var = np.maximum(sq_mean - (mean * mean), 0.0)
         local_std = np.sqrt(var)
 
-        valid = np.ones(len(kpts), dtype=bool)
-        for idx, (x, y) in enumerate(kpts):
-            xi = int(np.clip(x, 0, self.frame_w - 1))
-            yi = int(np.clip(y, 0, self.frame_h - 1))
+        # 벡터화된 필터링
+        kpts_int = kpts.astype(int)
+        xi = np.clip(kpts_int[:, 0], 0, self.frame_w - 1)
+        yi = np.clip(kpts_int[:, 1], 0, self.frame_h - 1)
 
-            rel_dark = val[yi, xi] / (val_blur[yi, xi] + 1e-6)
-            is_shadow_like = (
-                (val[yi, xi] < shadow_value_thresh)
-                and (sat[yi, xi] < shadow_saturation_thresh)
-                and (rel_dark < shadow_rel_dark_thresh)
-            )
-            is_weak_structure = (grad[yi, xi] < min_shadow_grad) or (local_std[yi, xi] < min_shadow_local_std)
-
-            if is_shadow_like and is_weak_structure:
-                valid[idx] = False
+        rel_dark = val[yi, xi] / (val_blur[yi, xi] + 1e-6)
+        is_shadow_like = (
+            (val[yi, xi] < shadow_value_thresh) &
+            (sat[yi, xi] < shadow_saturation_thresh) &
+            ((rel_dark < shadow_rel_dark_thresh) | (val[yi, xi] < 0.15))
+        )
+        is_weak_structure = (grad[yi, xi] < min_shadow_grad) | (local_std[yi, xi] < min_shadow_local_std)
+        valid = ~(is_shadow_like & is_weak_structure)
 
         return valid
 
@@ -255,16 +239,116 @@ class PointFilter:
         local_std = np.sqrt(var)
 
         y_cut = int(np.clip(self.frame_h * top_region_ratio, 0, self.frame_h - 1))
+
+        # 벡터화된 필터링
+        kpts_int = kpts.astype(int)
+        xi = np.clip(kpts_int[:, 0], 0, self.frame_w - 1)
+        yi = np.clip(kpts_int[:, 1], 0, self.frame_h - 1)
+
+        in_top_region = yi <= y_cut
+        strong_structure = (grad[yi, xi] >= top_region_min_grad) & (local_std[yi, xi] >= top_region_min_std)
+        valid = ~(in_top_region & ~strong_structure)
+
+        return valid
+
+    def filter_shadow_and_top_combined(
+        self,
+        frame: np.ndarray,
+        kpts: np.ndarray,
+        use_sky_filter: bool = True,
+        use_shadow_filter: bool = True,
+        use_top_region_filter: bool = True,
+        shadow_value_thresh: float = 0.46,
+        shadow_saturation_thresh: float = 0.30,
+        min_shadow_grad: float = 15.0,
+        min_shadow_local_std: float = 8.0,
+        shadow_rel_dark_thresh: float = 0.82,
+        top_region_ratio: float = 0.30,
+        top_region_min_grad: float = 25.0,
+        top_region_min_std: float = 10.0,
+        min_keypoints: int = 200,
+    ) -> np.ndarray:
+        """하늘 + 그림자 + 상단 영역 필터를 통합하여 중복 계산 제거 (성능 최적화).
+
+        Sobel, boxFilter, HSV 연산을 한 번만 수행하고 모든 필터에서 재사용합니다.
+        """
+        if len(kpts) == 0:
+            return np.array([], dtype=bool)
+
+        # 모든 필터가 비활성화된 경우 조기 반환
+        if not use_sky_filter and not use_shadow_filter and not use_top_region_filter:
+            return np.ones(len(kpts), dtype=bool)
+
+        # === 공통 계산: 그레이스케일 변환 및 구조적 특징 (한 번만 계산) ===
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+        gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+        grad = cv2.magnitude(gx, gy)
+
+        mean = cv2.boxFilter(gray, cv2.CV_32F, (7, 7), normalize=True)
+        sq_mean = cv2.boxFilter(gray * gray, cv2.CV_32F, (7, 7), normalize=True)
+        var = np.maximum(sq_mean - (mean * mean), 0.0)
+        local_std = np.sqrt(var)
+
+        # === HSV 계산 (하늘/그림자 필터에서 공유) ===
+        need_hsv = use_sky_filter or use_shadow_filter
+        if need_hsv:
+            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV).astype(np.float32)
+            h = hsv[:, :, 0] / 180.0
+            sat = hsv[:, :, 1] / 255.0
+            val = hsv[:, :, 2] / 255.0
+            if use_shadow_filter:
+                val_blur = cv2.GaussianBlur(val, (21, 21), 0)
+
+        # === 상단 영역 필터 전용 계산 ===
+        if use_top_region_filter:
+            y_cut = int(np.clip(self.frame_h * top_region_ratio, 0, self.frame_h - 1))
+
+        # === 벡터화된 특징점 필터링 ===
+        # 특징점 좌표를 정수 인덱스로 변환
+        kpts_int = kpts.astype(int)
+        xi = np.clip(kpts_int[:, 0], 0, self.frame_w - 1)
+        yi = np.clip(kpts_int[:, 1], 0, self.frame_h - 1)
+
         valid = np.ones(len(kpts), dtype=bool)
 
-        for idx, (x, y) in enumerate(kpts):
-            xi = int(np.clip(x, 0, self.frame_w - 1))
-            yi = int(np.clip(y, 0, self.frame_h - 1))
+        # 하늘 필터 적용 (HSV 재사용)
+        if use_sky_filter:
+            is_blue = (h[yi, xi] >= 0.5) & (h[yi, xi] <= 0.75)
+            is_cloud = (sat[yi, xi] < 0.3) & (val[yi, xi] > 0.6)
+            sky_invalid = is_blue | is_cloud
+            valid &= ~sky_invalid
 
-            if yi <= y_cut:
-                strong_structure = (grad[yi, xi] >= top_region_min_grad) and (local_std[yi, xi] >= top_region_min_std)
-                if not strong_structure:
-                    valid[idx] = False
+        # 그림자 필터 적용
+        if use_shadow_filter:
+            rel_dark = val[yi, xi] / (val_blur[yi, xi] + 1e-6)
+            is_shadow_like = (
+                (val[yi, xi] < shadow_value_thresh) &
+                (sat[yi, xi] < shadow_saturation_thresh) &
+                ((rel_dark < shadow_rel_dark_thresh) | (val[yi, xi] < 0.15))
+            )
+            # OR 로직: gradient나 local_std 중 하나라도 낮으면 약한 구조로 판정 (그림자 제거 강화)
+            is_weak_structure = (grad[yi, xi] < min_shadow_grad) | (local_std[yi, xi] < min_shadow_local_std)
+            shadow_invalid = is_shadow_like & is_weak_structure
+            valid &= ~shadow_invalid
+
+        # 상단 영역 필터 적용
+        if use_top_region_filter:
+            in_top_region = yi <= y_cut
+            strong_structure = (grad[yi, xi] >= top_region_min_grad) & (local_std[yi, xi] >= top_region_min_std)
+            top_invalid = in_top_region & ~strong_structure
+            valid &= ~top_invalid
+
+        # === 최소 키포인트 보존 안전장치 ===
+        remaining = np.count_nonzero(valid)
+        if remaining < min_keypoints and len(kpts) > remaining:
+            filtered_indices = np.where(~valid)[0]
+            if len(filtered_indices) > 0:
+                filtered_grads = grad[yi[filtered_indices], xi[filtered_indices]]
+                need = min_keypoints - remaining
+                rescue_count = min(need, len(filtered_indices))
+                top_k = np.argsort(filtered_grads)[::-1][:rescue_count]
+                valid[filtered_indices[top_k]] = True
 
         return valid
     
