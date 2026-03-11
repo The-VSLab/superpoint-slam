@@ -210,8 +210,12 @@ class VisualSLAM3D:
 
         # 실시간 2D 확인창 - 최적화: enable_viz=True인 경우에만 생성
         if self.enable_viz:
-            cv2.namedWindow('Processing', cv2.WINDOW_NORMAL)
-            cv2.resizeWindow('Processing', 640, 360)
+            try:
+                cv2.namedWindow('Processing', cv2.WINDOW_NORMAL)
+                cv2.resizeWindow('Processing', 640, 360)
+            except cv2.error:
+                logger.warning("Display not available, disabling visualization")
+                self.enable_viz = False
 
         # =========================
         # Benchmark / Stats
