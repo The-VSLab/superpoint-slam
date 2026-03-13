@@ -1,6 +1,10 @@
+import logging
+
 import cv2
 import numpy as np
 import torch
+
+logger = logging.getLogger(__name__)
 
 class SemanticFilter:
     def __init__(self, model_name="yolov8n.pt", conf_thresh=0.3, half=False):
@@ -8,6 +12,7 @@ class SemanticFilter:
         self.conf_thresh = conf_thresh
         # MPS (Apple Silicon) doesn't support FP16 upsample ops — force FP32
         if half and not torch.cuda.is_available():
+            logger.info("FP16 disabled: only supported on CUDA devices")
             half = False
         self.half = half
         try:

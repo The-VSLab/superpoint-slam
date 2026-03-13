@@ -7,8 +7,14 @@ import logging
 from dataclasses import dataclass
 from typing import List, Optional
 
-import g2o
 import numpy as np
+
+try:
+    import g2o
+    HAS_G2O = True
+except ImportError:
+    g2o = None
+    HAS_G2O = False
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +74,10 @@ def run_bundle_adjustment(
     Returns:
         BAResult 또는 None (최적화 불가 시)
     """
+    if not HAS_G2O:
+        logger.warning("g2o not available - bundle adjustment skipped")
+        return None
+
     cfg = ba_config
     if two_pass is None:
         two_pass = cfg.two_pass_rejection
