@@ -108,10 +108,13 @@ class LocalMapTracker:
         visible_mps = [mp for i, mp in enumerate(local_map_pts_dict.values()) if in_image[i]]
         visible_proj_pts = proj_pts[in_image]
 
-        # 3. 디스크립터 매칭
-        valid_mps = [mp for mp in visible_mps if mp.descriptor is not None]
-        if len(valid_mps) == 0:
+        # 3. 디스크립터 매칭 (descriptor가 있는 맵포인트만 필터링)
+        valid_indices = [i for i, mp in enumerate(visible_mps) if mp.descriptor is not None]
+        if len(valid_indices) == 0:
             return result
+
+        valid_mps = [visible_mps[i] for i in valid_indices]
+        valid_proj_pts = visible_proj_pts[valid_indices]
 
         mp_descs = np.array([mp.descriptor for mp in valid_mps]).T
         if mp_descs.shape[1] == 0:
@@ -124,8 +127,8 @@ class LocalMapTracker:
             kpt_idx = m[1]
 
             if kpt_idx not in curr_kpt_to_mp:
-                mp = visible_mps[mp_idx]
-                pt_proj = visible_proj_pts[mp_idx]
+                mp = valid_mps[mp_idx]
+                pt_proj = valid_proj_pts[mp_idx]
                 dist = np.linalg.norm(pt_proj - kpts[kpt_idx][:2])
 
                 if dist < self.projection_dist:
