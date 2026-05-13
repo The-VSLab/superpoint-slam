@@ -1,0 +1,152 @@
+# KITTI Sequence 08 전용 설정
+# 카메라: P0 기준 fx=fy=707.09, cx=601.89, cy=183.11
+# 이미지 크기: 1242x375 → --resize 1242 375 옵션과 함께 사용
+# focal_multiplier = 707.09 / 1242 ≈ 0.5693
+
+camera:
+  focal_multiplier: 0.5693     # 1242x375 원본 해상도 기준: 707.09/1242
+  min_dimension: 64
+  resize_target: 640
+  dashboard_mask_ratio: 0.95   # KITTI는 본넷이 거의 없음
+
+superpoint:
+  conf_thresh: 0.015
+  nn_thresh: 0.7
+  max_kpts: 1500
+  min_kpts: 400
+  roi_sky: 0.25               # KITTI 08은 하늘 비율이 적음
+  roi_hood: 0.92              # 본넷 마스킹 최소화
+  sp_scale: 1.0
+  sp_interval: 1
+  sp_fp16: false
+
+clahe:
+  enabled: true
+  clip_limit: 2.0
+  tile_grid_size: [8, 8]
+
+matcher:
+  mutual: true
+  ratio_thresh: 0.80
+
+semantic:
+  enabled: false
+  yolo_conf: 0.3
+  half: true
+  dynamic_classes: [0, 1, 2, 3, 5, 7]
+
+point_filter:
+  use_shadow_filter: false     # KITTI 도로는 그림자 필터 불필요
+  use_top_region_filter: false # 하늘 제거는 roi_sky로 처리
+  shadow_value_thresh: 0.46
+  shadow_saturation_thresh: 0.30
+  min_shadow_grad: 15.0
+  min_shadow_local_std: 8.0
+  shadow_rel_dark_thresh: 0.82
+  top_region_ratio: 0.30
+  top_region_min_grad: 25.0
+  top_region_min_std: 10.0
+
+optical_flow:
+  win_size: 21
+  max_level: 3
+  fb_thresh: 1.0
+  termination_epsilon: 0.01
+  termination_max_iter: 30
+
+pnp:
+  min_points: 15
+  min_inliers: 10
+  reprojection_error: 5.0
+  min_translation: 0.001
+  max_translation: 15.0       # KITTI 고속 구간 허용
+  ransac_iterations: 1000
+  confidence: 0.99
+
+motion:
+  speed_jump_multiplier: 6.0
+  min_speed_thresh: 0.3
+  direction_reversal_cos: -0.5
+
+stabilization:
+  y_damping: 0.05
+  pitch_roll_damping: 0.15
+  inertia_weight: 0.4
+  y_clip: [-2.0, 2.0]         # KITTI 오르막/내리막 허용
+  dead_reckoning_decay: 0.8
+  speed_history_len: 30
+
+triangulation:
+  min_depth: 0.5
+  max_depth: 200.0
+  max_x_extent: 150.0
+  max_y_extent: 30.0
+
+keyframe:
+  parallax_threshold: 25.0
+  min_gap: 3
+  max_gap: 20
+  adaptive_inlier_ratio: 0.4
+  min_adaptive_inliers: 25
+  stall_distance: 0.3
+  stall_lookback: 10
+  alignment_dist: 3.0
+  culling_interval: 5
+
+epipolar:
+  essential_threshold: 0.5
+  homography_threshold: 3.0
+  homography_selection_ratio: 0.85
+  homography_min_inliers: 15
+
+ba:
+  local_keyframes: 5
+  local_iterations: 5
+  global_iterations: 10
+  min_observations: 2
+  min_map_points: 10
+  reprojection_weight: 0.5
+  huber_delta: 5.991
+  pose_drift_threshold: 3.0
+  outlier_chi2_threshold: 5.991
+  two_pass_rejection: true
+  rotation_drift_threshold: 0.2
+  adaptive_termination: false
+  convergence_threshold: 0.01
+  min_iterations: 3
+
+loop_closure:
+  min_frame_gap: 30
+  top_k: 5
+  min_inliers: 30
+  min_inlier_ratio: 0.25
+  descriptor_similarity: 0.97
+  verify_min_inliers: 25
+  verify_min_inlier_ratio: 0.15
+  verify_min_3d_points: 15
+  verify_reprojection_error: 5.0
+
+pose_graph:
+  rotation_weight: 10.0
+  translation_weight: 1.0
+  iterations: 20
+
+map_culling:
+  min_observations: 3
+
+viz:
+  enabled: true
+  window_size: [640, 360]
+  keypoint_radius: 2
+  voxel_size: 0.1
+  point_size: 3.0
+
+performance:
+  filter_on_sp_only: false
+  local_map_limit: 0
+  local_map_keyframes: 5
+  local_map_projection_dist: 10.0
+
+logging:
+  csv_per_frame: false
+  csv_path: "frame_log.csv"
