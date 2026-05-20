@@ -1,23 +1,24 @@
-# KITTI Sequence 08 전용 설정
-# 카메라: P0 기준 fx=fy=707.09, cx=601.89, cy=183.11
-# 이미지 크기: 1242x375 → --resize 1242 375 옵션과 함께 사용
-# focal_multiplier = 707.09 / 1242 ≈ 0.5693
+# KITTI Sequence 01 전용 설정
+# 카메라: KITTI Odometry 계열 P0/P2 기준 fx≈707.09 사용
+# 이미지 크기: 1241x376 → --resize 1240 376 옵션과 함께 사용
+# SuperPoint 구조에 맞춰 8의 배수인 1240x376 사용
+# focal_multiplier = 707.09 / 1240 ≈ 0.5702
 
 camera:
-  focal_multiplier: 0.5693     # 1242x375 원본 해상도 기준: 707.09/1242
+  focal_multiplier: 0.5702     # 1240x376 리사이즈 기준: 707.09/1240
   min_dimension: 64
-  resize_target: 640
+  resize_target: 1240
   dashboard_mask_ratio: 0.95   # KITTI는 본넷이 거의 없음
 
 superpoint:
-  conf_thresh: 0.015
+  conf_thresh: 0.012           # 특징점 확보를 위해 08 설정보다 약간 완화
   nn_thresh: 0.7
-  max_kpts: 1500
-  min_kpts: 400
-  roi_sky: 0.25               # KITTI 08은 하늘 비율이 적음
-  roi_hood: 0.92              # 본넷 마스킹 최소화
+  max_kpts: 2000
+  min_kpts: 500
+  roi_sky: 0.22                # KITTI 01 기준 상단 하늘 영역 일부 제외
+  roi_hood: 0.94               # 본넷 마스킹 최소화
   sp_scale: 1.0
-  sp_interval: 1
+  sp_interval: 2               # 실행 명령어의 --sp-interval 2와 일관성 유지
   sp_fp16: false
 
 clahe:
@@ -30,8 +31,8 @@ matcher:
   ratio_thresh: 0.80
 
 semantic:
-  enabled: false
-  yolo_conf: 0.3
+  enabled: false               # 명령어에서 --use_semantic 사용 시 true로 override됨
+  yolo_conf: 0.35              # 애매한 객체 탐지를 줄이기 위해 0.30 → 0.35
   half: true
   dynamic_classes: [0, 1, 2, 3, 5, 7]
 
@@ -55,25 +56,25 @@ optical_flow:
   termination_max_iter: 30
 
 pnp:
-  min_points: 15
-  min_inliers: 10
-  reprojection_error: 5.0
+  min_points: 25               # 충분한 대응점이 있을 때만 PnP 수행
+  min_inliers: 18              # 정상 대응점 기준 강화
+  reprojection_error: 4.0      # 기존 5.0보다 엄격하게 설정
   min_translation: 0.001
-  max_translation: 15.0       # KITTI 고속 구간 허용
-  ransac_iterations: 1000
-  confidence: 0.99
+  max_translation: 15.0        # KITTI 고속 구간 허용
+  ransac_iterations: 1500
+  confidence: 0.995
 
 motion:
-  speed_jump_multiplier: 6.0
+  speed_jump_multiplier: 5.0
   min_speed_thresh: 0.3
   direction_reversal_cos: -0.5
 
 stabilization:
-  y_damping: 0.05
-  pitch_roll_damping: 0.15
-  inertia_weight: 0.4
-  y_clip: [-2.0, 2.0]         # KITTI 오르막/내리막 허용
-  dead_reckoning_decay: 0.8
+  y_damping: 0.04
+  pitch_roll_damping: 0.12
+  inertia_weight: 0.30
+  y_clip: [-2.0, 2.0]          # KITTI 오르막/내리막 허용
+  dead_reckoning_decay: 0.75
   speed_history_len: 30
 
 triangulation:
@@ -116,15 +117,15 @@ ba:
   min_iterations: 3
 
 loop_closure:
-  min_frame_gap: 30
+  min_frame_gap: 50
   top_k: 5
-  min_inliers: 30
+  min_inliers: 35
   min_inlier_ratio: 0.25
-  descriptor_similarity: 0.97
-  verify_min_inliers: 25
-  verify_min_inlier_ratio: 0.15
-  verify_min_3d_points: 15
-  verify_reprojection_error: 5.0
+  descriptor_similarity: 0.98
+  verify_min_inliers: 35
+  verify_min_inlier_ratio: 0.25
+  verify_min_3d_points: 20
+  verify_reprojection_error: 4.0
 
 pose_graph:
   rotation_weight: 10.0
@@ -136,7 +137,7 @@ map_culling:
 
 viz:
   enabled: true
-  window_size: [1226, 370]
+  window_size: [1240, 376]
   keypoint_radius: 2
   voxel_size: 0.1
   point_size: 3.0
