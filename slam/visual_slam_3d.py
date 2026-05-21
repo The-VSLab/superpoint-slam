@@ -42,6 +42,7 @@ class VisualSLAM3D:
         config: SLAMConfig = None,
         output_dir="path_final",
         resize=None,
+        calib_path=None,
         highway_mode=False,
     ):
         # --- 설정 객체 ---
@@ -96,10 +97,16 @@ class VisualSLAM3D:
         logger.info("Semantic SLAM (YOLO): %s", c.semantic.enabled)
 
         # 카메라 파라미터
-        self.focal = max(self.W, self.H) * c.camera.focal_multiplier
-        self.cx = self.W / 2.0
-        self.cy = self.H / 2.0
-        self.K = np.array([[self.focal, 0, self.cx], [0, self.focal, self.cy], [0, 0, 1]])
+        if calib_path is not None:
+            self.K = self._load_kitti_calib(calib_path, orig_w, orig_h, self.W, self.H)
+        else:
+            focal = max(self.W, self.H) * c.camera.focal_multiplier
+            self.K = np.array([[focal, 0, self.W / 2.0],
+                                [0, focal, self.H / 2.0],
+                                [0,     0,           1.0]])
+        self.focal = self.K[0, 0]
+        self.cx = self.K[0, 2]
+        self.cy = self.K[1, 2]
 
         logger.info("Loading SuperPoint...")
         self.fe = SuperPointFrontend(
@@ -190,6 +197,26 @@ class VisualSLAM3D:
         self.visualizer = SLAMVisualizer(self.cfg.viz, self.save_dir, self.W, self.H)
         self.enable_viz = self.visualizer.enabled
         self.metrics = SLAMMetrics(self.save_dir, self.cfg.logging)
+
+    @staticmethod
+    def _load_kitti_calib(calib_path: str, orig_w: int, orig_h: int, new_w: int, new_h: int) -> np.ndarray:
+        """calib.txt에서 P0 내부 파라미터를 읽어 리사이즈 비율로 스케일링한 K를 반환."""
+        with open(calib_path) as f:
+            for line in f:
+                if line.startswith("P0:"):
+                    vals = list(map(float, line.strip().split()[1:]))
+                    P = np.array(vals).reshape(3, 4)
+                    K = P[:3, :3].copy()
+                    K[0, 0] *= new_w / orig_w  # fx
+                    K[1, 1] *= new_h / orig_h  # fy
+                    K[0, 2] *= new_w / orig_w  # cx
+                    K[1, 2] *= new_h / orig_h  # cy
+                    logger.info(
+                        "calib.txt loaded: fx=%.2f fy=%.2f cx=%.2f cy=%.2f (scaled %dx%d → %dx%d)",
+                        K[0, 0], K[1, 1], K[0, 2], K[1, 2], orig_w, orig_h, new_w, new_h,
+                    )
+                    return K
+        raise ValueError(f"P0 not found in {calib_path}")
 
     def mask_car(self, img):
         # 대시보드(차체) 마스킹

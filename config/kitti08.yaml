@@ -83,9 +83,9 @@ triangulation:
   max_y_extent: 30.0
 
 keyframe:
-  parallax_threshold: 25.0
-  min_gap: 3
-  max_gap: 20
+  parallax_threshold: 60.0    # 1224px 해상도 기준, 640px 대비 2배 보정 (25→60)
+  min_gap: 8                  # 11fps 기준 최소 0.7초 간격 보장
+  max_gap: 40                 # 최대 강제 키프레임 간격
   adaptive_inlier_ratio: 0.4
   min_adaptive_inliers: 25
   stall_distance: 0.3
@@ -116,15 +116,15 @@ ba:
   min_iterations: 3
 
 loop_closure:
-  min_frame_gap: 30
+  min_frame_gap: 200          # 키프레임 기준 최소 간격 (약 200 keyframe 이후 후보)
   top_k: 5
-  min_inliers: 30
-  min_inlier_ratio: 0.25
-  descriptor_similarity: 0.97
-  verify_min_inliers: 25
-  verify_min_inlier_ratio: 0.15
+  min_inliers: 20
+  min_inlier_ratio: 0.15
+  descriptor_similarity: 0.75 # max-pooling 글로벌 descriptor 기준 적정값 (0.97→0.75)
+  verify_min_inliers: 20
+  verify_min_inlier_ratio: 0.10
   verify_min_3d_points: 15
-  verify_reprojection_error: 5.0
+  verify_reprojection_error: 8.0
 
 pose_graph:
   rotation_weight: 10.0

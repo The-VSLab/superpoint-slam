@@ -67,6 +67,12 @@ class LoopClosureManager:
             return None
 
         candidates.sort(key=lambda x: x[0], reverse=True)
+
+        if candidates:
+            top_sim = candidates[0][0]
+            logger.debug("[LoopClosure] frame %d: top_sim=%.4f (thresh=%.2f), total_cands=%d",
+                         frame_idx, top_sim, self.descriptor_similarity, len(candidates))
+
         candidates = [c for c in candidates if c[0] > self.descriptor_similarity]
 
         for sim, cand_idx in candidates[: self.top_k]:
