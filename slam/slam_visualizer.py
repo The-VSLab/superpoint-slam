@@ -40,10 +40,14 @@ class SLAMVisualizer:
         import time
         vis_t0 = time.perf_counter()
         if self.enabled:
-            img_vis = cv2.cvtColor(img_curr, cv2.COLOR_BGR2GRAY)
-            img_vis = cv2.cvtColor(img_vis, cv2.COLOR_GRAY2BGR)
-            for kp in kpts:
-                cv2.circle(img_vis, (int(kp[0]), int(kp[1])), 2, (0, 255, 255), -1)
+            img_vis = img_curr.copy()
+            if len(kpts) > 0:
+                pts = kpts[:, :2].astype(int)
+                xs = np.clip(pts[:, 0], 1, img_vis.shape[1] - 2)
+                ys = np.clip(pts[:, 1], 1, img_vis.shape[0] - 2)
+                for dy in (-1, 0, 1):
+                    for dx in (-1, 0, 1):
+                        img_vis[ys + dy, xs + dx] = (0, 255, 255)
             cv2.putText(img_vis, f"Frame: {frame_idx}", (10, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
             cv2.imshow('Processing', img_vis)

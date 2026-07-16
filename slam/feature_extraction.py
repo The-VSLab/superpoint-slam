@@ -57,6 +57,7 @@ class FeatureExtractor:
 
         # Point filter config
         self.pf_cfg = point_filter_cfg
+        self.enable_point_filter = point_filter_cfg.use_shadow_filter or point_filter_cfg.use_top_region_filter
 
         # 캐시된 Semantic mask (OF 프레임에서 재사용)
         self._cached_dyn_mask: Optional[np.ndarray] = None
@@ -117,7 +118,7 @@ class FeatureExtractor:
 
         # Point Filter (하늘 + 그림자 + 상단 영역)
         filter_t0 = time.perf_counter()
-        should_filter = (not self.filter_on_sp_only) or run_infer
+        should_filter = ((not self.filter_on_sp_only) or run_infer) and self.enable_point_filter
         if len(kpts) > 0 and should_filter:
             pf = self.pf_cfg
             combined_mask = self.point_filter.filter_shadow_and_top_combined(
