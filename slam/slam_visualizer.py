@@ -139,7 +139,7 @@ class SLAMVisualizer:
 
         # 2D Top-Down Map
         try:
-            from .slam2d_common import render_topdown_map
+            from .topdown_render import render_topdown_map
             traj_2d = traj_pts[:, [0, 2]]
             # trajactory만 출력하기 위해 주석처리
             # map_3d = np.asarray(pcd.points)

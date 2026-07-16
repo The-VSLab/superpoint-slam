@@ -169,7 +169,7 @@ pip install -r requirements.txt
 ### 6.2 전체 학습 (teacher-student)
 
 ```bash
-./.venv/bin/python learning/train_superpoint_v13.py --config learning/config_v13.yml
+./.venv/bin/python learning/train_superpoint.py --config learning/train_config.yml
 ```
 
 주의: `use_teacher_desc: true`인데 teacher가 desc를 반환하지 않으면

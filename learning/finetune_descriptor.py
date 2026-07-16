@@ -32,7 +32,7 @@ for p in [ROOT_DIR, CUR_DIR]:
 
 from models.superpoint_mobilenet import SuperPointNetV2
 from learning.original_superpoint import SuperPoint
-from learning.train_superpoint_v13 import ImageFolderDataset
+from learning.train_superpoint import ImageFolderDataset
 
 
 def build_args():

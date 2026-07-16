@@ -5,7 +5,7 @@
 | 스크립트 | 용도 | 출력 |
 |----------|------|------|
 | `learning/finetune_descriptor.py` | **디스크립터 헤드만 재증류** (검출/트래킹 성능 보존, ~2분) | `weights/v14_desc_ft.pth` |
-| `learning/train_superpoint_v13.py` | 전체 teacher-student 증류 (2-Phase) | `checkpoints/v14_latest.pth` |
+| `learning/train_superpoint.py` | 전체 teacher-student 증류 (2-Phase) | `checkpoints/v14_latest.pth` |
 
 > 과거 문서에 있던 `scripts/train_synthetic.py`, `scripts/train_superpoint.py`는 제거된 스크립트입니다.
 
@@ -54,7 +54,7 @@ MobileNetV2 백본은 ImageNet 사전학습 지능(BatchNorm 통계 등)을 갖�
 
 ### Phase 1: 뼈대 동결 (Frozen Backbone)
 
-- `learning/config_v13.yml`: `freeze_backbone: true`, `epochs: 20`, `lr: 1.0e-4`
+- `learning/train_config.yml`: `freeze_backbone: true`, `epochs: 20`, `lr: 1.0e-4`
 - Head(Detector + Descriptor)만 학습 → 안정된 기초 가중치
 
 ### Phase 2: 정밀 튜닝 (Safe Fine-Tuning)
@@ -66,7 +66,7 @@ MobileNetV2 백본은 ImageNet 사전학습 지능(BatchNorm 통계 등)을 갖�
 ### 실행
 
 ```bash
-uv run python learning/train_superpoint_v13.py --config learning/config_v13.yml
+uv run python learning/train_superpoint.py --config learning/train_config.yml
 ```
 
 ### ⚠️ 디스크립터 붕괴 방지 체크리스트 (필독)

@@ -146,8 +146,8 @@ VSLab은 기존 ORB-SLAM 계열 파이프라인의 프론트엔드를 경량 딥
 
 - Student: MobileNetV2 (ImageNet pretrained)
 - Teacher: Original SuperPoint (VGG-based)
-- 스크립트: `learning/train_superpoint_v13.py`
-- 설정: `learning/config_v13.yml`
+- 스크립트: `learning/train_superpoint.py`
+- 설정: `learning/train_config.yml`
 - 데이터: KITTI Odometry 00~10 (`dataset/training`)
 
 ### 4.3 2-Phase Training
@@ -313,5 +313,5 @@ VSLab의 MobileNet 기반 SuperPoint SLAM 접근은 다음을 동시에 달성�
 - `matcher_module/btmatcher.py`
 - `slam/visual_slam_3d.py`
 - `slam/loop_closure.py`
-- `learning/train_superpoint_v13.py`
-- `learning/config_v13.yml`
+- `learning/train_superpoint.py`
+- `learning/train_config.yml`
