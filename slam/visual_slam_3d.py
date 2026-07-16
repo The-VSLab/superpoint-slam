@@ -14,6 +14,40 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# Sim3 Pose-Graph 변환 유틸 (규약: 앱 포즈 = T_wc(camera→world),
+#   g2o VertexSim3Expmap = Scw(world→camera), 스케일 s는 Sim3에 내장)
+#   합성 루프로 검증 완료: 스케일 드리프트 제거 + 좌표 왕복변환 일치.
+# ---------------------------------------------------------------------------
+def _twc_to_sim3(T_wc, scale=1.0):
+    """camera→world 4x4 → g2o.Sim3 (world→camera, Scw)."""
+    R_wc = T_wc[:3, :3]
+    t_wc = T_wc[:3, 3]
+    R_cw = R_wc.T
+    t_cw = -R_cw @ t_wc
+    return g2o.Sim3(R_cw, t_cw, float(scale))
+
+
+def _sim3_to_twc(S):
+    """g2o.Sim3 (world→camera, scale s) → camera→world 4x4 (metric)."""
+    R_cw = S.rotation().rotation_matrix()
+    t_cw = np.asarray(S.translation())
+    s = S.scale()
+    R_wc = R_cw.T
+    t_wc = -(1.0 / s) * R_wc @ t_cw
+    T = np.eye(4)
+    T[:3, :3] = R_wc
+    T[:3, 3] = t_wc
+    return T
+
+
+def _rel_sim3_measurement(T_wc_from, T_rel, scale=1.0):
+    """EdgeSim3 측정치 = S_to * S_from^{-1}  (T_to = T_from @ T_rel).
+    scale=1일 때 앵커(T_wc_from)와 무관하게 inv(T_rel)과 동치임을 검증함."""
+    T_wc_to = T_wc_from @ T_rel
+    return _twc_to_sim3(T_wc_to, scale) * _twc_to_sim3(T_wc_from, 1.0).inverse()
+
 # 기존 모듈
 from frontend.superpoint_frontend import SuperPointFrontend
 from matcher_module import BTMatcher
@@ -150,6 +184,11 @@ class VisualSLAM3D:
         
         # 포인트 필터 (하늘/구름 제거)
         self.point_filter = PointFilter(frame_h=self.H, frame_w=self.W)
+
+        # 매 프레임 np.full() 할당 제거용 사전 할당 풀
+        _max_pool = int(c.superpoint.max_kpts * 2 + 64)
+        self._3d_pool = np.full((_max_pool, 3), np.nan)
+        self._prev_3d_pool = np.full((_max_pool, 3), np.nan)
 
         # 데이터 저장소
         self.all_map_points = []
@@ -377,6 +416,7 @@ class VisualSLAM3D:
                 for i, kpt_idx in enumerate(lm_result.extra_kpt_idxs):
                     self.curr_kpt_to_mp[kpt_idx] = lm_result.extra_mp_ids[i]
                     curr_3d_pts_world[kpt_idx] = lm_result.extra_mp_ids[i].pos3d
+
             
             # 1. PnP 시도 (충분한 3D 점이 있을 때)
             pose_result = None
@@ -402,12 +442,10 @@ class VisualSLAM3D:
                 inliers = pose_result.inliers
                 inlier_ratio = pose_result.inlier_ratio
                 mask = pose_result.mask
-                method = pose_result.method
             else:
                 mask = None
                 inliers = 0
                 inlier_ratio = 0.0
-                method = "DR"
             pnp_t1 = time.perf_counter()
 
             # 3. 최적 포즈 적용 및 지도 업데이트
@@ -436,15 +474,25 @@ class VisualSLAM3D:
                 )
 
                 if tri_result.count > 0:
+                    # flow 프레임에서도 디스크립터를 부여하기 위해, 새 MapPoint의 2D 위치와
+                    # 가장 가까운 SP 키포인트(2px 이내)의 디스크립터를 샘플링한다.
+                    # (기존: use_flow면 descriptor=None → LocalMapTracker 매칭 전멸)
+                    _sp_tree = None
+                    if use_flow and desc is not None and len(kpts) > 0:
+                        from scipy.spatial import cKDTree as _cKDTree
+                        _sp_tree = _cKDTree(kpts[:, :2])
+
                     # MapPoint 객체 등록
                     for i, pt3d in enumerate(tri_result.world_pts):
                         kpt_idx = tri_result.valid_indices[i]
                         if kpt_idx not in self.curr_kpt_to_mp:
+                            desc_i = None
                             if not use_flow and desc is not None and kpt_idx < desc.shape[1]:
-                                desc_col = desc[:, kpt_idx]
-                                desc_i = desc_to_numpy(desc_col)
-                            else:
-                                desc_i = None
+                                desc_i = desc_to_numpy(desc[:, kpt_idx])
+                            elif _sp_tree is not None:
+                                _d, _j = _sp_tree.query(tri_result.p2_filtered[i], k=1)
+                                if _d < 2.0 and _j < desc.shape[1]:
+                                    desc_i = desc_to_numpy(desc[:, _j])
                             mp = self.map.create_map_point(pt3d, desc_i)
                             if self.last_keyframe_idx >= 0:
                                 mp.add_observation(self.last_keyframe_idx, tri_result.p1_filtered[i])
@@ -505,13 +553,31 @@ class VisualSLAM3D:
                             dists, indices = tree.query(query_pts, k=1)
                             alignment_dist = self.cfg.keyframe.alignment_dist
                             desc_np = desc_to_numpy(desc)
-                            for i, (f_idx, mp) in enumerate(valid_items):
+                            for i, (_, mp) in enumerate(valid_items):
                                 if dists[i] < alignment_dist:
                                     best_idx = indices[i]
                                     aligned_kpt_to_mp[best_idx] = mp
                                     if desc_np is not None and best_idx < desc_np.shape[1]:
                                         mp.update_descriptor(desc_np[:, best_idx])
                         self.curr_kpt_to_mp = aligned_kpt_to_mp
+
+                    # 루프 클로저용 클린 kpt↔3D 쌍 구성.
+                    # 소스: 트래킹 PnP가 실제 사용하는 (curr_3d_pts_world[p2_idx] ↔ p2) 쌍
+                    #       — 자체 PnP 검증에서 정합 확인된 유일한 클린 소스.
+                    # flow 위치 → SP 키포인트 연결은 인덱스 북키핑(dict, 오염됨)을 쓰지 않고
+                    # 순수 기하 최근접(2px)으로 수행한다.
+                    self._lc_pts3d_sp = None
+                    if p2_idx is not None and p2 is not None and len(kpts) > 0:
+                        _v = ~np.isnan(curr_3d_pts_world[p2_idx, 0])
+                        if _v.sum() >= 4:
+                            from scipy.spatial import cKDTree
+                            _obj = curr_3d_pts_world[p2_idx][_v]
+                            _pos2d = p2[_v]
+                            _dists, _sp_idx = cKDTree(kpts[:, :2]).query(_pos2d, k=1)
+                            _ok = _dists < 2.0
+                            if np.count_nonzero(_ok) >= 4:
+                                self._lc_pts3d_sp = np.full((len(kpts), 3), np.nan)
+                                self._lc_pts3d_sp[_sp_idx[_ok]] = _obj[_ok]
 
                     self.add_keyframe(frame_idx, kpts, desc, curr_3d_pts_world, T_rel.copy())
                     self.last_keyframe_idx = frame_idx
@@ -591,18 +657,27 @@ class VisualSLAM3D:
         # PGO 후 Y축 높이 클리핑 (평지 주행 가정)
         for i in range(len(self.keyframes)):
             self.keyframes[i][1, 3] = np.clip(self.keyframes[i][1, 3], *self.cfg.stabilization.y_clip)
-        for kf_id, kf in self.map.keyframes.items():
+        for _, kf in self.map.keyframes.items():
             kf.pose[1, 3] = np.clip(kf.pose[1, 3], *self.cfg.stabilization.y_clip)
 
+        # 최종(post-PGO) 키프레임 3D 궤적 저장 — GT(ATE) 평가용 (frame_idx, x, y, z)
+        if self.keyframes:
+            kf_traj = np.array([
+                [idx, pose[0, 3], pose[1, 3], pose[2, 3]]
+                for idx, pose in zip(self.keyframe_indices, self.keyframes)
+            ])
+            np.savetxt(os.path.join(self.metrics.save_dir, "trajectory_kf.txt"), kf_traj, fmt="%.4f")
+
+        loop_stats = {**self.loop_closure.stats, 'thresh': self.loop_closure.descriptor_similarity}
         self.metrics.print_summary(
             self.fe.net, self.all_map_points, self.keyframes,
-            self.traj_points, self.jetson_scale,
+            self.traj_points, self.jetson_scale, loop_stats=loop_stats,
         )
         self.visualizer.render_final(
             self.map, self.keyframes, self.all_map_points, self.all_map_colors,
         )
 
-    def add_keyframe(self, frame_idx, kpts, desc, pts_3d=None, T_rel=None):
+    def add_keyframe(self, frame_idx, kpts, desc, _pts_3d=None, T_rel=None):
         self.keyframes.append(self.cur_pose.copy())
         self.keyframe_indices.append(frame_idx)
         self.keyframe_local_pts.append([])  # 이 키프레임에 등록될 로컬 3D 포인트들
@@ -621,31 +696,75 @@ class VisualSLAM3D:
         node_idx = len(self.keyframes) - 1
 
         if node_idx > 0 and T_rel is not None:
+            # 주의: 인자 T_rel은 '마지막 한 프레임'의 상대이동이라 키프레임 간격(~5프레임)보다
+            # 훨씬 짧다. odom 엣지는 반드시 키프레임 포즈 간 합성 상대변환이어야
+            # PGO가 궤적을 짧은 체인으로 수축시키지 않는다.
+            T_rel_kf = np.linalg.inv(self.keyframes[node_idx - 1]) @ self.keyframes[node_idx]
             self.g2o_edges.append({
                 'type': 'odom',
                 'from': node_idx - 1,
                 'to': node_idx,
-                'transform': T_rel.copy(),
+                'transform': T_rel_kf,
                 'scale': 1.0,
                 'information_scale': 1.0,
             })
 
-        # pts_3d는 이미 월드 좌표계 (curr_3d_pts_world에서 전달됨)
-        self.loop_closure.add_keyframe(frame_idx, kpts, desc_np, pts_3d)
+        # 루프 클로저용 kpt↔3D 쌍 (SP 키포인트 인덱스 기준).
+        # 우선 소스: process()에서 기하 매칭으로 만든 클린 배열(_lc_pts3d_sp).
+        # (curr_kpt_to_mp dict는 flow/SP 인덱스 세대 혼입으로 오염 — PnP 검증 불가)
+        lc_arr = getattr(self, "_lc_pts3d_sp", None)
+        if lc_arr is not None and len(lc_arr) == len(kpts):
+            pts_3d_for_lc = lc_arr.copy()
+        else:
+            pts_3d_for_lc = np.full((len(kpts), 3), np.nan)
+            for kpt_idx, mp in self.curr_kpt_to_mp.items():
+                if kpt_idx < len(kpts):
+                    pts_3d_for_lc[kpt_idx] = mp.pos3d
+        logger.debug("[KF %d] loop-closure 3D density: %d/%d kpts have MapPoint",
+                     frame_idx, int(np.count_nonzero(~np.isnan(pts_3d_for_lc[:, 0]))), len(kpts))
+        # 자가진단: 저장한 kpt↔3D 매핑을 자기 pose로 재투영 — 매핑이 옳다면 오차가 수 px 이내
+        if logger.isEnabledFor(logging.DEBUG):
+            def _self_reproj(tag, pts3d_arr):
+                _valid = ~np.isnan(pts3d_arr[:, 0])
+                if _valid.sum() < 10:
+                    return
+                _Tcw = np.linalg.inv(self.cur_pose)
+                _P = _Tcw[:3, :3] @ pts3d_arr[_valid].T + _Tcw[:3, 3:4]
+                _ok = _P[2] > 0.1
+                if _ok.sum() < 10:
+                    return
+                _uv = self.K @ _P[:, _ok]
+                _uv = (_uv[:2] / _uv[2]).T
+                _err = np.linalg.norm(_uv - kpts[_valid][_ok][:, :2], axis=1)
+                logger.debug("[KF %d] %s self-reproj err: median=%.1fpx p90=%.1fpx (n=%d)",
+                             frame_idx, tag, np.median(_err), np.percentile(_err, 90), int(_ok.sum()))
+            _self_reproj("dict(curr_kpt_to_mp)", pts_3d_for_lc)
+            if _pts_3d is not None:
+                _self_reproj("array(curr_3d_pts_world)", np.asarray(_pts_3d)[: len(kpts)])
+            # 판별 실험: 저장 쌍만으로 PnP — 쌍이 정상이면 inlier 다수 (cur_pose와 무관)
+            _valid = ~np.isnan(pts_3d_for_lc[:, 0])
+            if _valid.sum() >= 15:
+                _ok2, _rv, _tv, _inl2 = cv2.solvePnPRansac(
+                    pts_3d_for_lc[_valid].astype(np.float32), kpts[_valid][:, :2].astype(np.float32),
+                    self.K, None, iterationsCount=300, reprojectionError=8.0,
+                    confidence=0.99, flags=cv2.SOLVEPNP_ITERATIVE)
+                logger.debug("[KF %d] same-frame PnP on stored pairs: success=%s inliers=%s/%d",
+                             frame_idx, _ok2, None if _inl2 is None else len(_inl2), int(_valid.sum()))
+        # 후보 relativize를 위해 현재 키프레임의 절대 포즈(T_wc)도 함께 저장
+        self.loop_closure.add_keyframe(frame_idx, kpts, desc_np, pts_3d_for_lc, self.cur_pose.copy())
         loop = self.loop_closure.find_loop(frame_idx, kpts, desc_np)
         if loop is not None:
-            # Sim3에서는 스케일 정보를 보존하여 전달 (정규화 없음!)
-            scale = loop.scale
-            logger.info("[Pose Graph] g2o Sim3 Edge: Scale=%.3f", scale)
-            
-            # 루프 클로저 엣지 저장
+            logger.info("[Pose Graph] Sim3 Loop Edge: method=%s RelDist=%.3f", loop.method, loop.scale)
+
+            # 루프 클로저 엣지 저장 (transform은 후보→현재 상대 포즈)
             self.g2o_edges.append({
                 'type': 'loop',
                 'from': loop.match_index,
                 'to': node_idx,
                 'transform': loop.transform,
-                'scale': scale,
-                'information_scale': 1.0,  # 루프 엣지는 본 체인에서 특수 처리
+                'scale': loop.scale,
+                'method': loop.method,     # 'pnp'(metric 병진) / 'ess'(회전만)
+                'information_scale': 1.0,
             })
             self.optimize_pose_graph()
 
@@ -653,12 +772,12 @@ class VisualSLAM3D:
         # GBA만 후처리로 실행합니다 (process() 루프 종료 후)
 
     def _build_g2o_optimizer(self):
-        """g2o Sim3 Pose Graph 최적화기 구축"""
+        """g2o Sim3 Pose Graph 최적화기 구축 (7-DOF: 회전+병진+스케일)"""
         if not HAS_G2O:
             logger.warning("g2o not available - pose graph optimization skipped")
             return None
         optimizer = g2o.SparseOptimizer()
-        solver = g2o.BlockSolverSE3(g2o.LinearSolverDenseSE3())
+        solver = g2o.BlockSolverSim3(g2o.LinearSolverDenseSim3())
         algorithm = g2o.OptimizationAlgorithmLevenberg(solver)
         optimizer.set_algorithm(algorithm)
         return optimizer
@@ -698,7 +817,7 @@ class VisualSLAM3D:
         # GBA 후 전체 키프레임 Y축 높이 강제 클리핑 (평지 주행 가정)
         for i in range(len(self.keyframes)):
             self.keyframes[i][1, 3] = np.clip(self.keyframes[i][1, 3], *self.cfg.stabilization.y_clip)
-        for kf_id, kf in self.map.keyframes.items():
+        for _, kf in self.map.keyframes.items():
             kf.pose[1, 3] = np.clip(kf.pose[1, 3], *self.cfg.stabilization.y_clip)
 
         logger.info("Global BA Complete.")
@@ -708,54 +827,75 @@ class VisualSLAM3D:
             return
         if not HAS_G2O:
             return
+        # 루프 엣지가 없으면 odom 체인만으로는 교정할 정보가 없음 (그래프가 이미 정확히 만족됨)
+        if not any(e['type'] == 'loop' for e in self.g2o_edges):
+            logger.info("[Pose Graph] no loop edges - skipping PGO")
+            return
 
         optimizer = self._build_g2o_optimizer()
+        if optimizer is None:
+            return
 
-        # 1. 노드 추가 (SE3 vertex)
+        pg = self.cfg.pose_graph
+        rot_w = pg.rotation_weight
+        trans_w = pg.translation_weight
+        scale_w = pg.scale_weight
+        ess_trans_w = pg.essential_translation_weight
+
+        # 1. 노드 추가 (Sim3 vertex, 초기 스케일=1)
+        n_kf = len(self.keyframes)
         for i, pose in enumerate(self.keyframes):
-            v = g2o.VertexSE3()
+            v = g2o.VertexSim3Expmap()
             v.set_id(i)
-            v.set_estimate(g2o.Isometry3d(pose))
-            if i == 0:
-                v.set_fixed(True)  # 첫 번째 키프레임 고정
+            v.set_estimate(_twc_to_sim3(pose, 1.0))
+            v.set_fixed(i == 0)   # 첫 키프레임 고정 (게이지 + 스케일 앵커)
             optimizer.add_vertex(v)
 
-        # 2. 엣지 추가
+        # 2. 엣지 추가 (측정치 = 후보/이전(from)→현재(to) 상대 Sim3)
+        #    Sim3 log 탄젠트 순서: [0:3]=회전, [3:6]=병진, [6]=스케일
+        edge_count = 0
         for edge_info in self.g2o_edges:
-            e = g2o.EdgeSE3()
-            e.set_vertex(0, optimizer.vertex(edge_info['from']))
-            e.set_vertex(1, optimizer.vertex(edge_info['to']))
-            
-            transform = edge_info['transform'].copy()
-            
+            i_from = edge_info['from']
+            i_to = edge_info['to']
+            if not (0 <= i_from < n_kf and 0 <= i_to < n_kf):
+                continue
+            T_rel = edge_info['transform']
+            meas = _rel_sim3_measurement(self.keyframes[i_from], T_rel, 1.0)
+
+            info = np.eye(7)
             if edge_info['type'] == 'loop':
-                # PnP 기반 루프 엣지: PnP가 돌려준 스케일(거리) 정보를 그대로 보존해야
-                # g2o가 전체 Odometry 궤적의 스케일 드리프트를 펴줄 수 있습니다.
-                
-                # 비등방 Information Matrix:
-                # - 회전(0-2): 높은 신뢰도 (방향 보정에 탁월)
-                # - 병진(3-5): PnP inlier 품질 향상(15개 이상)에 따라 병진 신뢰도도 어느정도 반영
-                info = np.eye(6)
-                info[0, 0] = info[1, 1] = info[2, 2] = self.cfg.pose_graph.rotation_weight
-                info[3, 3] = info[4, 4] = info[5, 5] = self.cfg.pose_graph.translation_weight
+                info[0, 0] = info[1, 1] = info[2, 2] = rot_w      # 회전: 강하게 신뢰
+                if edge_info.get('method') == 'ess':
+                    # Essential 루프: recoverPose 병진은 '단위' 스케일 → 병진/스케일 거의 무시
+                    tw = ess_trans_w
+                    info[6, 6] = ess_trans_w
+                else:
+                    # PnP 루프: 병진이 metric → 스케일 드리프트 교정에 사용
+                    tw = trans_w
+                    info[6, 6] = scale_w
+                info[3, 3] = info[4, 4] = info[5, 5] = tw
             else:
-                # 오도메트리 엣지: 등방 Information Matrix
-                info = np.eye(6) * edge_info['information_scale']
-            
-            e.set_measurement(g2o.Isometry3d(transform))
+                info *= edge_info['information_scale']            # 오도메트리: 등방
+
+            e = g2o.EdgeSim3()
+            e.set_vertex(0, optimizer.vertex(i_from))
+            e.set_vertex(1, optimizer.vertex(i_to))
+            e.set_measurement(meas)
             e.set_information(info)
+            e.set_id(edge_count)
             optimizer.add_edge(e)
+            edge_count += 1
 
         # 3. 최적화 실행
         optimizer.initialize_optimization()
-        optimizer.optimize(self.cfg.pose_graph.iterations)
+        optimizer.optimize(pg.iterations)
 
-        # 4. 결과 추출 → 키프레임 포즈 갱신
-        for i in range(len(self.keyframes)):
+        # 4. 결과 추출 → 키프레임 포즈 갱신 (Sim3 → T_wc, metric)
+        for i in range(n_kf):
             v = optimizer.vertex(i)
             if v is not None:
-                self.keyframes[i] = v.estimate().matrix().copy()
-        
+                self.keyframes[i] = _sim3_to_twc(v.estimate())
+
         self.cur_pose = self.keyframes[-1].copy()
 
 

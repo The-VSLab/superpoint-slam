@@ -33,6 +33,7 @@ class SLAMMetrics:
         self.inliers_list = []
         self.inlier_ratio_list = []
         self.map_points_added_list = []
+        self.method_counts = {}  # e.g. {"PnP": 123, "Ess": 45, "DR": 10}
 
         self.ba_result = None
 
@@ -75,6 +76,7 @@ class SLAMMetrics:
         self.inliers_list.append(counts["inliers"])
         self.inlier_ratio_list.append(counts["inlier_ratio"])
         self.map_points_added_list.append(counts["map_points_added"])
+        self.method_counts[method] = self.method_counts.get(method, 0) + 1
 
         if self._csv_writer is not None:
             t = timings
@@ -94,7 +96,7 @@ class SLAMMetrics:
             self._csv_file.close()
             logger.info("Per-frame CSV saved to: %s", os.path.join(self.save_dir, "frame_log.csv"))
 
-    def print_summary(self, fe_net, all_map_points, keyframes, traj_points, jetson_scale=None):
+    def print_summary(self, fe_net, all_map_points, keyframes, traj_points, jetson_scale=None, loop_stats=None):
         """성능 요약을 로깅하고 JSON/궤적 파일을 저장합니다."""
         if not self.total_ms_list:
             return
@@ -126,6 +128,30 @@ class SLAMMetrics:
         logger.info("   Avg Triangulation: %.2f ms (%.1f%%)", avg_triangulation, avg_triangulation / avg_total * 100)
         logger.info("   Avg Visualization: %.2f ms (%.1f%%)", avg_vis, avg_vis / avg_total * 100)
         logger.info("   Other/Overhead:    %.2f ms (%.1f%%)", other, other / avg_total * 100)
+
+        total_frames = len(self.total_ms_list)
+        if self.method_counts:
+            logger.info("Method breakdown (total %d frames):", total_frames)
+            for method, count in sorted(self.method_counts.items(), key=lambda x: -x[1]):
+                logger.info("   %-8s %5d frames (%5.1f%%)", method, count, count / total_frames * 100)
+
+        if loop_stats:
+            logger.info("Loop Closure stats:")
+            logger.info("   Skipped (check_interval):       %d", loop_stats.get('skipped_interval', 0))
+            logger.info("   Skipped (not distinctive):      %d", loop_stats.get('skipped_distinct', 0))
+            logger.info("   Attempts (keyframes evaluated): %d", loop_stats['attempts'])
+            logger.info("   Above similarity thresh (%.2f): %d  (max_sim=%.4f)",
+                        loop_stats.get('thresh', 0), loop_stats['above_thresh'], loop_stats['max_sim'])
+            logger.info("   Candidates tried:               %d", loop_stats['pnp_tried'])
+            logger.info("     fail - few BTMatch (<8):      %d", loop_stats.get('fail_few_matches', 0))
+            logger.info("     fail - Essential Mat:         %d", loop_stats.get('fail_essential', 0))
+            logger.info("     fail - inliers too low:       %d", loop_stats.get('fail_inliers', 0))
+            logger.info("     PnP skipped - few 3D pts:     %d  (max valid-3D seen=%d)",
+                        loop_stats.get('pnp_no3d', 0), loop_stats.get('pnp_3d_max', 0))
+            logger.info("   Loops found:  %d  (PnP=%d, Ess=%d)",
+                        loop_stats['found'],
+                        loop_stats.get('found_pnp', 0),
+                        loop_stats.get('found_ess', 0))
 
         if jetson_scale is not None:
             jetson_fps = fps * jetson_scale
@@ -172,6 +198,7 @@ class SLAMMetrics:
                 "max_kpts": int(np.max(self.kpts_list)) if self.kpts_list else 0,
             },
             "ba_stats": self.ba_result.to_dict() if self.ba_result else {},
+            "method_stats": self.method_counts,
         }
 
         stats_path = os.path.join(self.save_dir, "slam_stats.json")
