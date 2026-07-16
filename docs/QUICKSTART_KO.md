@@ -1,5 +1,9 @@
 # 🚀 빠른 시작 가이드 (5분)
 
+> **가중치 안내**: 기본 권장 가중치는 `weights/v14_desc_ft.pth`입니다.
+> `weights/v14_latest.pth`는 디스크립터 헤드 붕괴로 루프 클로저가 동작하지 않습니다 (트래킹은 가능).
+> KITTI 실행법(시퀀스별 `--calib`/`--resize`)은 [run.md](../run.md) 참고.
+
 ## 폴더 구조 한눈에
 
 ```
@@ -29,7 +33,7 @@ uv sync
 동영상 파일을 이용해 SuperPoint SLAM을 즉시 실행합니다. GPU 가속(CUDA/MPS)이 자동으로 활성화됩니다.
 
 ```bash
-uv run python scripts/superpoint_app.py --input assets/test2.mp4 --weights weights/v14_latest.pth --config config/default.yaml
+uv run python scripts/superpoint_app.py --input assets/test2.mp4 --weights weights/v14_desc_ft.pth --config config/default.yaml
 ```
 
 ✅ 결과: `result/superpoint_3d_01/` 폴더에 파일 생성
@@ -43,12 +47,12 @@ uv run python scripts/superpoint_app.py --input assets/test2.mp4 --weights weigh
 
 ### 권장 실행 (YAML + 시맨틱 필터)
 ```bash
-uv run python scripts/superpoint_app.py --input assets/test2.mp4 --weights weights/v14_latest.pth --config config/default.yaml --use_semantic --sp-interval 2
+uv run python scripts/superpoint_app.py --input assets/test2.mp4 --weights weights/v14_desc_ft.pth --config config/default.yaml --use_semantic --sp-interval 2
 ```
 
 ### 그림자 필터를 최대로 적용하여 스케일 관리를 최적화
 ```bash
-uv run python scripts/superpoint_app.py --input assets/test2.mp4 --weights weights/v14_latest.pth --config config/default.yaml --aggressive_shadow_filter
+uv run python scripts/superpoint_app.py --input assets/test2.mp4 --weights weights/v14_desc_ft.pth --config config/default.yaml --aggressive_shadow_filter
 ```
 
 ---

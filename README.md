@@ -4,91 +4,77 @@
 
 본 프로젝트는 SuperPoint 기반의 시각 SLAM 프론트엔드를 경량화하기 위해,
 기존의 연산량이 큰 VGG 계열 백본을 MobileNet 구조로 대체한
-경량 SuperPoint 프론트엔드를 기반으로 하는 Python 3D 시각 SLAM 시스템을 제안한다.
-제안한 프론트엔드는 ORB-SLAM에서 사용되는 기반 특징점 추출 모듈을 대체하도록 설계되었으며,
-Optical Flow 기반 추적, g2o를 통한 Bundle Adjustment 및 Sim3 Pose Graph Optimization 등
-Python 친화적이고 독자적인 SLAM 백엔드를 갖추고 있다.
-이를 통해 복잡한 환경에서도 향상된 강인성과
-임베디드 및 자율주행 환경(예: 그림자 억제, 하늘 및 시맨틱 동적 객체 마스킹)에 최적화된 프론트엔드를 시연한다.
+경량 SuperPoint 프론트엔드(0.16M 파라미터, 0.59MB) 기반의 Python 3D 시각 SLAM 시스템을 제안한다.
+시스템은 Optical Flow 기반 추적, g2o Bundle Adjustment,
+그리고 **Sim3(7-DOF) Pose Graph Optimization 기반 루프 클로저**를 갖춘
+Python 친화적인 독자 SLAM 백엔드를 포함한다.
+KITTI odometry 벤치마크에서 루프 검출(시퀀스 07: PnP 92 inliers)과
+오탐 방지(시퀀스 08: 후보 460개 전원 기각)를 실측으로 검증하였다.
 
 ---
 
 ## 1. 서론 (Introduction)
 
 ORB-SLAM과 같은 기존 시각 SLAM 시스템은 ORB와 같은 수작업 특징점에
-의존하고 있으며, 이는 연산 효율은 높지만
-저텍스처 환경, 조명 변화, 모션 블러 등
-도전적인 시각 환경에서는 성능 저하가 발생한다.
+의존하고 있으며, 이는 연산 효율은 높지만 저텍스처 환경, 조명 변화,
+모션 블러 등 도전적인 시각 환경에서는 성능 저하가 발생한다.
 
-SuperPoint는 딥러닝 기반 특징점 검출 및 기술자 추출 기법으로,
-이러한 환경 변화에 대해 높은 강인성을 보인다.
-그러나 SuperPoint의 원본 구조는 VGG 계열의 무거운 백본을 사용하여
-임베디드 및 실시간 SLAM 환경에 적용하기에는
-연산량 측면에서 한계가 있다.
-
-이에 본 프로젝트에서는
-MobileNet 기반의 경량 SuperPoint 프론트엔드를 설계하고,
-Python 환경에서 독자적인 SLAM 백엔드 파이프라인(Optical Flow 트래킹 + g2o BA/PGO)을 구축하여,
-높은 강인성과 유연한 실험이 가능한 SLAM 환경을 제공한다.
+SuperPoint는 딥러닝 기반 특징점 검출 및 기술자 추출 기법으로
+이러한 환경 변화에 강인하지만, 원본 VGG 백본은 임베디드·실시간
+SLAM에 적용하기에 연산량이 과도하다. 본 프로젝트는 MobileNet 기반
+경량 SuperPoint 프론트엔드와 Python 백엔드 파이프라인(Optical Flow
+트래킹 + g2o BA/Sim3 PGO)을 결합하여 강인성과 실시간성을 동시에 확보한다.
 
 ---
 
-## 환경 설정 및 실행 (Execution & Setup)
+## 2. 환경 설정 및 실행 (Setup & Execution)
 
-이 저장소는 루트 기준 패키지(`models/`, `frontend/`, `tracking/`, `io_utils/`)를 사용합니다.
-
-### 1) 패키지 설치 (Installation)
-
-의존성 패키지를 설치하는 방법은 두 가지가 있습니다.
-
-**방법 A: `uv`를 사용하는 경우 (권장)**
-프로젝트 루트에서 다음 명령어를 실행하면 `pyproject.toml`에 정의된 최적의 패키지 환경이 자동으로 구축됩니다.
+### 2.1 설치
 
 ```bash
+# 방법 A: uv (권장)
 uv sync
-```
 
-**방법 B: `pip`를 사용하는 경우**
-가상환경을 활성화한 후 `requirements.txt`를 통해 설치합니다.
-
-```bash
+# 방법 B: pip
 pip install -r requirements.txt
 ```
 
-### 2) 환경 변수 설정 (Environment)
+프로젝트 루트에서 실행하거나 `export PYTHONPATH=.`를 설정한다.
 
-실행 위치에 상관없이 모듈을 인식하도록 하기 위해 다음 중 하나를 만족해야 합니다.
+### 2.2 가중치
 
-- 프로젝트 루트에서 실행
-- `PYTHONPATH` 설정: `export PYTHONPATH=.`
+| 파일 | 용도 |
+|------|------|
+| `weights/v14_desc_ft.pth` | **권장** — v14 검출 헤드 + 재증류된 디스크립터 헤드 (루프 클로저 동작) |
+| `weights/v14_latest.pth` | 검출/트래킹 전용 — **디스크립터 헤드 붕괴** 확인됨(인접 프레임 매칭 inlier 7%), 루프 클로저 불가 |
+| `weights/superpoint_v1.pth` | 원본 SuperPoint(VGG) — 디스크립터 재증류의 teacher |
 
----
-
-## 실행 (3D 전용 CLI)
+### 2.3 KITTI 실행
 
 ```bash
-# 3D SLAM (기본)
-python scripts/superpoint_app.py --input <VIDEO_PATH> --weights <WEIGHTS_PATH>
-
-# 3D SLAM (권장: YAML 설정 + 시맨틱 필터)
-python scripts/superpoint_app.py --input <VIDEO_PATH> --weights <WEIGHTS_PATH> --config config/default.yaml --use_semantic
+./.venv/bin/python scripts/superpoint_app.py \
+  --input "dataset/training/07/image_0/%06d.png" \
+  --weights weights/v14_desc_ft.pth \
+  --calib dataset/training/07/calib.txt \
+  --config config/kitti_urban.yaml \
+  --resize 1226 370 \
+  --no-show_display --no-viz
 ```
 
-3D 실행 결과는 기본적으로 `result/superpoint_3d_XX/` 하위에 저장됩니다.
+핵심 옵션:
 
-- 포인트 클라우드: `final_slam_map.ply`
-- 탑다운 맵: `topdown_map.png`
-- 2D 궤적: `trajectory_xy.txt`
+- `--input`은 디렉토리가 아닌 **`%06d.png` 패턴** (cv2.VideoCapture 이미지 시퀀스)
+- `--calib`: 시퀀스별 `calib.txt`의 P0 intrinsics 사용 (시퀀스 그룹마다 fx가 다르므로 필수 권장)
+- `--resize`: 시퀀스 그룹별 원본 해상도 사용 (자동 640 축소는 정확도·루프 검출 모두 저하, 속도 이득 없음 — 실측)
 
----
+| 시퀀스 | 원본 해상도 | fx | config |
+|--------|-------------|-----|--------|
+| 00–02 | `--resize 1241 376` | 718.86 | `kitti_urban.yaml` |
+| 03 | `--resize 1242 375` | 721.54 | `kitti_urban.yaml` |
+| 04–10 | `--resize 1226 370` | 707.09 | `kitti_urban.yaml` (01만 `kitti_highway.yaml`) |
 
-## 2. 연구 동기 (Motivation)
-
-본 연구의 동기는 다음과 같다.
-
-- 환경 변화에 강인한 특징점 추출 기법의 SLAM 적용
-- 임베디드 환경에서의 실시간 SLAM 구현 가능성 확보
-- 기존 SLAM 백엔드 구조를 유지하면서 프론트엔드 성능 향상
+출력 (`result/superpoint_3d_XX/`): `final_slam_map.ply`, `topdown_map.png`,
+`trajectory_xyz.txt`(프레임별), **`trajectory_kf.txt`(post-PGO 키프레임, ATE 평가용: frame_idx x y z)**
 
 ---
 
@@ -96,125 +82,121 @@ python scripts/superpoint_app.py --input <VIDEO_PATH> --weights <WEIGHTS_PATH> -
 
 ### 3.1 네트워크 구조
 
-제안하는 SuperPoint 프론트엔드는
-기존 SuperPoint 구조를 기반으로 다음과 같이 설계되었다.
+- VGG 백본 → **MobileNetV2 백본** (ImageNet 사전학습, 1/8 해상도 지점까지 사용)
+- Depthwise Separable Conv 기반 Detector Head (65채널) / Descriptor Head (256차원)
+- 총 0.16M 파라미터, 0.59MB
 
-- 기존 VGG 계열 백본 → MobileNet 백본으로 대체
-- 공간 해상도 유지를 위한 8배 다운샘플링 구조
-- SuperPoint 방식의 Detector Head (65 채널 신뢰도 맵)
-- SuperPoint 방식의 Descriptor Head (256차원 실수형 기술자)
+### 3.2 디스크립터 헤드 재증류 (Descriptor Distillation)
 
-### 3.2 특징점 검출 및 기술자 생성
+학습 과정에서 디스크립터 헤드가 붕괴하는 사고(모든 키포인트의 기술자가
+사실상 동일 벡터로 수렴, 프레임 내 유사도 p95=0.999)가 발생할 수 있다.
+이를 복구하기 위해 `learning/finetune_descriptor.py`는 백본·검출 헤드를
+동결한 채 디스크립터 헤드(74.6K 파라미터)만 원본 SuperPoint teacher로부터
+재증류한다 (KITTI 이미지 6천 장, 2 epochs, 약 2분).
 
-- Detector Head에서 출력된 신뢰도 맵을 기반으로
-  Non-Maximum Suppression(NMS) 및 임계값 필터링을 수행
-- 검출된 특징점 위치에서 기술자를 샘플링
-- 모든 기술자는 L2 정규화를 수행하여 매칭 안정성 확보
+| 지표 | 붕괴 상태 (v14_latest) | 재증류 후 (v14_desc_ft) | Teacher |
+|------|------------------------|--------------------------|---------|
+| 인접 프레임 매칭 inlier | 7% | **89%** | 96% |
+| 진짜 루프쌍 inlier | 7% (구분 불가) | **74%** | 83% |
+| 프레임 내 자기유사도(중앙값) | 0.618 | 0.04 | 0.02 |
 
 ---
 
 ## 4. 시스템 통합 (System Integration)
 
-### 4.1 SLAM 파이프라인 구조
+### 4.1 파이프라인
 
-제안한 시스템은 고전적인 ORB-SLAM의 복잡한 C++ 의존성을 벗어나 Python 환경에서 다음과 같이 구성된다.
+```
+입력 영상
+→ CLAHE + ROI/시맨틱 마스킹
+→ MobileNet-SuperPoint (특징점 + 256D 기술자)
+→ Optical Flow 트래킹 (+ 로컬 맵 재투영 매칭)
+→ PnP RANSAC 포즈 추정 → 포즈 안정화 → 키프레임 선정
+→ 삼각측량 + MapPoint 관리
+→ 루프 클로저 검출/검증 → Sim3 Pose Graph Optimization
+→ 3D 포인트클라우드 + 궤적 출력
+```
 
-- **프론트엔드 (Frontend)**: MobileNet 기반 SuperPoint 특징점 추출 + 환경 (그림자/하늘/선형 객체) 강제 마스킹 필터
-- **트래킹 (Tracking)**: Lucas-Kanade Optical Flow 기반 희소 매칭 및 SuperPoint 디스크립터 유사도 검증
-- **백엔드 (Backend & Mapping)**: g2o 기반 Local/Global Bundle Adjustment (BA), 핵심 키프레임 기반 카메라 자세 및 MapPoint 최적화
-- **루프 탐지 (Loop Closure)**: 전역 기술자 검색 및 g2o Sim3 Pose Graph Optimization (PGO)를 통한 스케일 드리프트 교정
+### 4.2 루프 클로저 (Loop Closure)
 
-### 4.2 전체 시스템 파이프라인
-
-입력 영상  
-→ HSV/Gradient 혼합 그림자 및 ROI 필터 (다중 마스킹 적용)  
-→ MobileNet-SuperPoint (특징점 및 256차원 실수형 기술자 추출)  
-→ Optical Flow 트래킹 및 기술자 L2 매칭 융합  
-→ PnP, RANSAC 기반 Pose Estimation 및 Keyframe 선정  
-→ Local MAP 구성 및 Bundle Adjustment (g2o)  
-→ Loop Closure 탐지 밎 Sim3 Pose Graph Optimization  
-→ 최종 3D 맵 (Point Cloud) 도출 및 2D 궤적 기록
-
----
-
-## 5. 구현 환경 및 세부 사항 (Implementation Details)
-
-- 개발 프레임워크: PyTorch
-- 특징점 기술자 차원: 256차원 (실수형)
-- 매칭 방식: L2 거리 기반 매칭 + Ratio Test + 상호 일관성 검사
-- 임베디드 환경에서의 실시간 동작을 고려한 경량 설계
+1. **검출**: 프레임별 기술자의 mean-pooling 벡터를 저장하고, 질의 시
+   저장분 평균(μ)을 빼는 **centering** 후 코사인 유사도로 후보 검색.
+   (max-pooling은 포화로 모든 쌍이 유사도 1.0이 되어 사용 불가 — 실측)
+2. **검증**: top-k 후보에 대해 **PnP(3D-2D, metric) 우선** — 실패 시
+   Essential Matrix(회전만 신뢰) 폴백. 임계값(`verify_min_inliers: 25`,
+   `ratio: 0.30`)은 KITTI 실측(진짜 루프 92 vs 가짜 9–14 inliers)으로 설정.
+3. **교정**: g2o **Sim3(7-DOF) PGO** — 단안 스케일 드리프트까지 교정.
+   PnP 루프 엣지는 회전+병진+스케일, Essential 엣지는 회전만 반영.
+   루프용 3D 쌍은 추적 검증을 통과한 클린 소스에서 기하 매칭으로 구성.
 
 ---
 
-## 6. 실험 결과 (Experimental Results)
+## 5. 실험 결과 (Experimental Results) — KITTI odometry 실측
 
-실험 결과, 제안한 MobileNet 기반 SuperPoint 프론트엔드는
-기존 ORB 기반 프론트엔드 대비
-저텍스처 및 환경 변화가 큰 장면에서
-보다 안정적인 특징점 검출 및 추적 성능을 보였다.
+평가: Umeyama(Sim3) 정렬 ATE, `trajectory_kf.txt`(post-PGO 키프레임) 기준.
+환경: Apple Silicon(MPS), Python 3.11.
 
-프레임 처리 속도(FPS)와 궤적 정확도(ATE)를 기준으로 한
-정량적 성능 평가는
-첨부된 논문 및 보고서에서 상세히 기술한다.
+| 시퀀스 | 특성 | ATE RMSE | 루프 클로저 | FPS |
+|--------|------|----------|-------------|-----|
+| **07** (695m, 루프 O) | 도심, 같은 방향 재방문 | **13.2–14.4 m** | **PnP 검출 성공** (92 inliers), 폐합 확인 | 15–17 |
+| **08** (3.2km, 루프 X) | 도심, 역주행 재방문만 존재 | **45.3–48.3 m** | 0건 = 정답 (후보 460개 전원 기각, **오탐 0**) | 15.5 |
+
+- 루프 클로저 효과 (07): 시작-끝 폐합 오차 38.5m → 25.4m, ATE 최대 17.2 → 13.2m
+- 08의 오차는 루프 보정이 불가능한 순수 odometry 드리프트 (경로 대비 ~1.4%)
+- 시퀀스 01(고속도로)은 재방문이 없어 루프 클로저 미발화가 정상
+
+### 성능 최적화 노트 (실측)
+
+- 기술자 매칭(BTMatcher)은 **CPU가 MPS보다 6배 빠름** (소규모 행렬의 커널
+  디스패치 오버헤드) — CUDA에서만 GPU 매칭 사용
+- 시각화 비활성(`--no-show_display --no-viz`) 시 프레임당 ~12ms 절약
+- 자동 리사이즈(640px)는 속도 이득 없이 ATE +41%, 루프 검출 실패 → 원본 해상도 권장
 
 ---
 
-### 6.1 성능 비교 (Performance Comparison)
+## 6. 학습 (Training)
 
-최근 업데이트를 통해, ORB-SLAM 프론트엔드 교체 방식을 넘어서 Python 전용 백엔드를 직접 탑재하고 고도화하였다.
-- 그림자 억제(`aggressive_shadow_filter`) 및 동적 시맨틱 객체 필터 적용.
-- `g2o` 포즈 그래프 최적화를 도입하여 스케일 관리에 취약한 모노큘러 SLAM의 **스케일 드리프트 현상을 크게 개선**.
-- Optical flow와 프레임 스킵 모드(`--sp-interval`) 결합으로 파이썬 환경의 제약하에서도 향상된 최적화 성능 확보.
+### 6.1 디스크립터 헤드 재증류 (권장 진입점)
 
-본 데이터는 제안한 MobileNet 기반 SuperPoint 프론트엔드와 기존 프론트엔드의 성능을 비교한다.
+```bash
+./.venv/bin/python learning/finetune_descriptor.py --epochs 2 --batch_size 8 --stride 3
+# 출력: weights/v14_desc_ft.pth (검출 헤드는 v14_latest와 동일 유지)
+```
 
-| 방법                | 특징점 종류                        | 평균 FPS      | 프레임당 처리 시간 (ms) | 궤적 오차 (ATE, m) | 신뢰도 (Inlier Ratio) | 임베디드 실시간성 |
-| ------------------- | ---------------------------------- | ------------- | ----------------------- | ------------------ | --------------------- | ----------------- |
-| ORB-SLAM (Baseline) | ORB                                | 9.6           | 104                     | 0.27               | 낮음                  | 가능              |
-| SuperPoint (원본)   | SuperPoint (VGG)                   | 2.5           | 400                     | **0.18**           | 매우 높음             | 불가능            |
-| **제안 방법**       | **MobileNet-SuperPoint (Phase 2)** | **5.0 ~ 9.0** | **160 ~ 210**           | **평가 예정**      | **~55% (매우 높음)**  | 가능              |
+- 데이터: `dataset/training/<seq>/image_0` (KITTI, 라벨 불필요 — teacher 증류)
+- 평가 시퀀스(07, 08)는 학습에서 자동 제외
 
-※ FPS 및 처리 시간은 Python 구동 (단일 카메라) 기준 평균값이며, C++ 및 TensorRT 포팅 시 실시간(30FPS+) 달성이 목표이다.
-ATE는 공개 데이터셋에서의 평균 절대 궤적 오차를 의미한다. 상기 수치는 초기 실험 결과를 기반으로 하며 향후 보완될 예정이다.
+### 6.2 전체 학습 (teacher-student)
+
+```bash
+./.venv/bin/python learning/train_superpoint_v13.py --config learning/config_v13.yml
+```
+
+주의: `use_teacher_desc: true`인데 teacher가 desc를 반환하지 않으면
+디스크립터 헤드가 붕괴한다 — 현재 코드는 이 경우 **에러를 발생**시킨다.
+학습 로그의 `desc=` 손실이 0으로 유지되면 즉시 중단하고 원인을 확인할 것.
+자세한 내용은 `docs/TRAINING_KO.md` 참고.
 
 ---
 
 ## 7. 한계점 및 향후 연구 (Limitations & Future Work)
 
-- 루프 클로저 및 재지역화 성능은
-  기술자 매칭 전략에 따라 영향을 받을 수 있음
-- 초저전력 임베디드 환경을 위해
-  양자화(Quantization) 및 추가 최적화 필요
-- 학습 데이터셋은 포함하지 않음 (라벨 준비 필요)
-
----
-
-## 7.1 학습 (Supervised Training)
-
-라벨(.npz) 기반의 **지도학습 스크립트**는 `scripts/train_synthetic.py`이며,
-KITTI 데이터를 이용한 **지도학습 스크립트**는 `scripts/train_superpoint.py`입니다.
-자세한 내용은 `docs/TRAINING_KO.md`를 참고하세요.
-
-간단 실행 예시:
-
-```bash
-python scripts/train_synthetic.py \
-  --data_dir train_data/seq01 \
-  --epochs 10 \
-  --batch_size 16 \
-  --height 480 \
-  --width 640
-```
+- **MapPoint 연관 딕셔너리의 인덱스 네임스페이스 혼입** — flow/SP 인덱스가
+  섞여 관측 기록·기술자 갱신·컬링의 정확도를 낮춤 (추적 outlier ~20%의
+  원인으로 추정). 루프 클로저는 클린 소스로 우회 완료, 근본 수정은 진행 예정.
+- Global BA 비활성 상태 — 재활성화 시 odometry 정확도 개선 여지
+- 루프 엣지가 시퀀스당 1개 수준 — 다중 루프(KITTI 00/05) 검증 필요
+- RANSAC 비결정성으로 런 간 ATE 편차 존재 (07: ±1m, 08: ±3m 수준)
+- 검출 결과는 런마다 다를 수 있어 다중 런 평균으로 보고할 것을 권장
 
 ---
 
 ## 8. 결론 (Conclusion)
 
-본 프로젝트는 경량화된 딥러닝 기반 특징점 추출 기법이
-기존의 고전적 SLAM 시스템에 효과적으로 결합될 수 있음을 보였다.
-MobileNet 기반 SuperPoint 프론트엔드를 통해
-강인성과 실시간 처리 성능 간의 균형을 달성하였으며,
-임베디드 환경에서의 SLAM 적용 가능성을 제시한다.
+본 프로젝트는 0.59MB의 경량 딥러닝 프론트엔드로 15+ FPS의 Python 단안
+SLAM을 구동하면서, Sim3 PGO 기반 루프 클로저의 검출(07)과 오탐 방지(08)를
+KITTI 실측으로 입증하였다. 경량성 대비 정확도(07 ATE 13.2m)의 균형은
+임베디드 환경에서의 SLAM 적용 가능성을 보여준다.
 
 ---
 
@@ -226,11 +208,7 @@ MobileNet 기반 SuperPoint 프론트엔드를 통해
 
 ## 10. 감사의 글 (Acknowledgements)
 
-본 연구는 다음의 연구를 기반으로 수행되었다.
+- DeTone et al., "SuperPoint: Self-Supervised Interest Point Detection and Description", CVPR Workshop, 2018.
+- Mur-Artal et al., "ORB-SLAM: A Versatile and Accurate Monocular SLAM System".
 
-- DeTone et al., “SuperPoint: Self-Supervised Interest Point Detection and Description”,
-  CVPR Workshop, 2018.
-- Mur-Artal et al., “ORB-SLAM: A Versatile and Accurate Monocular SLAM System”.
-
-본 저장소는 ORB-SLAM 코드를 포함하지 않으며,
-사용자는 ORB-SLAM을 각자의 라이선스에 따라 별도로 획득해야 한다.
+본 저장소는 ORB-SLAM 코드를 포함하지 않는다.

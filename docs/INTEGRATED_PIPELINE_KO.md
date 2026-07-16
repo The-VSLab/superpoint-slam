@@ -8,7 +8,7 @@
 
 ```bash
 # 동영상 또는 이미지 시퀀스 폴더를 입력하면 SLAM 이 동작합니다.
-uv run python scripts/superpoint_app.py --input your_video.mp4 --weights weights/v14_latest.pth --config config/default.yaml
+uv run python scripts/superpoint_app.py --input your_video.mp4 --weights weights/v14_desc_ft.pth --config config/default.yaml
 ```
 
 **이제 파편화된 스크립트 없이 오직 `superpoint_app.py` 하나만으로 모든 게 됩니다!** ✨
@@ -63,7 +63,7 @@ uv run python scripts/superpoint_app.py --input your_video.mp4 --weights weights
 ```bash
 uv run python scripts/superpoint_app.py \
     --input video.mp4 \
-    --weights weights/v14_latest.pth \
+    --weights weights/v14_desc_ft.pth \
     --config config/default.yaml \
     --use_semantic \
     --sp-interval 2
@@ -76,7 +76,7 @@ uv run python scripts/superpoint_app.py \
 ```bash
 uv run python scripts/superpoint_app.py \
     --input video.mp4 \
-    --weights weights/v14_latest.pth \
+    --weights weights/v14_desc_ft.pth \
     --config config/default.yaml \
     --aggressive_shadow_filter
 ```
@@ -86,7 +86,7 @@ uv run python scripts/superpoint_app.py \
 ```bash
 uv run python scripts/superpoint_app.py \
     --input video.mp4 \
-    --weights weights/v14_latest.pth \
+    --weights weights/v14_desc_ft.pth \
     --no-viz
 ```
 
