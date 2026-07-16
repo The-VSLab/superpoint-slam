@@ -87,11 +87,10 @@ class SLAMVisualizer:
             logger.info("Rendering %d points from Map across %d keyframes.", len(points), len(keyframes))
 
         # 2. 포인트 클라우드 객체 생성
-        # trajactory만 출력하기 위해 주석처리
-        # pcd = o3d.geometry.PointCloud()
-        # pcd.points = o3d.utility.Vector3dVector(points)
-        # pcd.colors = o3d.utility.Vector3dVector(colors)
-        # pcd = pcd.voxel_down_sample(voxel_size=self.cfg.voxel_size)
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(points)
+        pcd.colors = o3d.utility.Vector3dVector(colors)
+        pcd = pcd.voxel_down_sample(voxel_size=self.cfg.voxel_size)
 
         # 3. 경로선
         traj_pts = np.array([pose[:3, 3] for pose in keyframes])
@@ -106,8 +105,7 @@ class SLAMVisualizer:
         traj_line.paint_uniform_color([0, 1, 0])
 
         # 4. 키프레임 카메라 프러스텀
-        # vis_geoms = [pcd, traj_line] # trajactory만 출력하기 위해 주석처리
-        vis_geoms = [traj_line] # 특징점 제거하고 trajectory만 표시
+        vis_geoms = [pcd, traj_line]
         logger.info("Generating %d Keyframes...", len(keyframes))
 
         for pose in keyframes:
@@ -133,19 +131,15 @@ class SLAMVisualizer:
         ctr.set_zoom(0.5)
 
         # PLY 저장
-        # trajactory만 출력하기 위해 주석처리
-        # o3d.io.write_point_cloud(os.path.join(self.save_dir, "final_slam_map.ply"), pcd)
-        # logger.info("Point Cloud saved to: %s", os.path.join(self.save_dir, "final_slam_map.ply"))
+        o3d.io.write_point_cloud(os.path.join(self.save_dir, "final_slam_map.ply"), pcd)
+        logger.info("Point Cloud saved to: %s", os.path.join(self.save_dir, "final_slam_map.ply"))
 
         # 2D Top-Down Map
         try:
             from .topdown_render import render_topdown_map
             traj_2d = traj_pts[:, [0, 2]]
-            # trajactory만 출력하기 위해 주석처리
-            # map_3d = np.asarray(pcd.points)
-            # map_2d = map_3d[:, [0, 2]] if len(map_3d) > 0 else np.empty((0, 2))
-
-            map_2d = np.empty((0, 2)) # trajactory만 출력
+            map_3d = np.asarray(pcd.points)
+            map_2d = map_3d[:, [0, 2]] if len(map_3d) > 0 else np.empty((0, 2))
             map_img = render_topdown_map(traj_2d, map_2d)
             cv2.imwrite(os.path.join(self.save_dir, "topdown_map.png"), map_img)
             np.savetxt(os.path.join(self.save_dir, "trajectory_xy.txt"), traj_2d, fmt="%.4f")
