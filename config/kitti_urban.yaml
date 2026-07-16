@@ -141,7 +141,7 @@ map_culling:
 
 viz:
   enabled: true
-  window_size: [1226, 370]
+  window_size: [640, 360]
   keypoint_radius: 2
   voxel_size: 0.1
   point_size: 3.0
