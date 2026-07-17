@@ -155,11 +155,13 @@ class BAConfig:
 
 @dataclass
 class LoopClosureConfig:
-    min_frame_gap: int = 30
+    min_frame_gap: int = 30          # raw 프레임 인덱스 기준 최소 간격 (키프레임 수 아님)
     top_k: int = 5
     min_inliers: int = 30
     min_inlier_ratio: float = 0.25
     descriptor_similarity: float = 0.97
+    check_interval: int = 1          # N 키프레임마다 한 번만 루프 클로저 시도
+    min_distinctiveness: float = 0.0  # top1/top2 최소 비율 (0=비활성화, 1.05=5% 이상 차이)
     # PnP 수락 기준 (loop_closure.py 내부)
     verify_min_inliers: int = 25
     verify_min_inlier_ratio: float = 0.15
@@ -171,6 +173,8 @@ class LoopClosureConfig:
 class PoseGraphConfig:
     rotation_weight: float = 10.0
     translation_weight: float = 1.0
+    scale_weight: float = 1.0                     # Sim3 스케일 자유도 가중치 (루프 엣지)
+    essential_translation_weight: float = 1e-3    # Essential 루프: 병진 스케일 불확실 → 회전만 신뢰
     iterations: int = 20
 
 

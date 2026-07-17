@@ -20,7 +20,8 @@ class BTMatcher:
         self.mutual = mutual
         self.ratio_thresh = ratio_thresh
         self.use_cuda = use_cuda and torch.cuda.is_available()
-        # CUDA만 GPU 매칭 활성화 (MPS는 소규모 행렬 연산 시 커널 디스패치 오버헤드로 CPU보다 느림)
+        # CUDA만 GPU 매칭 활성화. MPS는 실측 6배 느림 (256x500 @ 256x1000 기준
+        # 2.64ms vs CPU 0.44ms — 소규모 행렬은 커널 디스패치 오버헤드가 지배)
         if self.use_cuda:
             self.device = torch.device("cuda")
         else:

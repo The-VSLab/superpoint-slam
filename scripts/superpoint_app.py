@@ -39,7 +39,9 @@ def build_parser():
     parser = argparse.ArgumentParser(description="SuperPoint SLAM")
     parser.add_argument("--input", type=str, required=True, help="동영상 또는 이미지 시퀀스 경로")
     parser.add_argument("--weights", type=str, required=True, help="SuperPoint 가중치 경로")
-    parser.add_argument("--resize", nargs=2, type=int, default=None, 
+    parser.add_argument("--calib", type=str, default=None,
+                        help="KITTI calib.txt 경로 (지정 시 실제 카메라 내부 파라미터 사용)")
+    parser.add_argument("--resize", nargs=2, type=int, default=None,
                         help="입력 리사이즈 [width height] (미지정 시 종횡비 유지 자동 리사이즈)")
     parser.add_argument("--slam_conf_thresh", type=float, default=0.015, 
                         help="특징점 신뢰도 임계값 (낮을수록 특징점 증가)")
@@ -240,6 +242,7 @@ def run_3d_slam(opt, parser):
         config=config,
         output_dir=str(out_dir),
         resize=opt.resize,
+        calib_path=opt.calib,
     )
 
     slam.process()

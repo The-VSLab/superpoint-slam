@@ -1,21 +1,22 @@
-# KITTI Sequence 08 전용 설정
-# 카메라: P0 기준 fx=fy=707.09, cx=601.89, cy=183.11
-# 이미지 크기: 1242x375 → --resize 1242 375 옵션과 함께 사용
-# focal_multiplier = 707.09 / 1242 ≈ 0.5693
+# KITTI 고속도로 주행 설정 (시퀀스 01 등: ~80km/h, 직선, 저텍스처)
+# - kitti_urban.yaml과의 차이: roi_sky 0.20(지평선 낮음), speed_jump 8.0(고속 가감속),
+#   parallax_threshold 40(시차 빨리 쌓임), loop min_frame_gap 50(단편 시퀀스)
+# - intrinsics는 시퀀스별 calib.txt를 --calib로 넘기는 것을 권장 (--resize 1226 370)
+# - 참고: 01은 재방문이 없어 루프 클로저가 발화하지 않는 것이 정상
 
 camera:
-  focal_multiplier: 0.5693     # 1242x375 원본 해상도 기준: 707.09/1242
+  focal_multiplier: 0.5693     # --calib 미지정 시 폴백 (kitti_urban과 동일 카메라 그룹)
   min_dimension: 64
   resize_target: 640
-  dashboard_mask_ratio: 0.95   # KITTI는 본넷이 거의 없음
+  dashboard_mask_ratio: 0.95
 
 superpoint:
   conf_thresh: 0.015
   nn_thresh: 0.7
   max_kpts: 1500
   min_kpts: 400
-  roi_sky: 0.25               # KITTI 08은 하늘 비율이 적음
-  roi_hood: 0.92              # 본넷 마스킹 최소화
+  roi_sky: 0.20                # 고속도로는 지평선이 낮아 하늘 비율이 더 큼
+  roi_hood: 0.92
   sp_scale: 1.0
   sp_interval: 1
   sp_fp16: false
@@ -36,8 +37,8 @@ semantic:
   dynamic_classes: [0, 1, 2, 3, 5, 7]
 
 point_filter:
-  use_shadow_filter: false     # KITTI 도로는 그림자 필터 불필요
-  use_top_region_filter: false # 하늘 제거는 roi_sky로 처리
+  use_shadow_filter: false
+  use_top_region_filter: false
   shadow_value_thresh: 0.46
   shadow_saturation_thresh: 0.30
   min_shadow_grad: 15.0
@@ -59,12 +60,12 @@ pnp:
   min_inliers: 10
   reprojection_error: 5.0
   min_translation: 0.001
-  max_translation: 15.0       # KITTI 고속 구간 허용
+  max_translation: 15.0
   ransac_iterations: 1000
   confidence: 0.99
 
 motion:
-  speed_jump_multiplier: 6.0
+  speed_jump_multiplier: 8.0   # 고속 주행 시 가속/감속 편차 허용
   min_speed_thresh: 0.3
   direction_reversal_cos: -0.5
 
@@ -72,7 +73,7 @@ stabilization:
   y_damping: 0.05
   pitch_roll_damping: 0.15
   inertia_weight: 0.4
-  y_clip: [-2.0, 2.0]         # KITTI 오르막/내리막 허용
+  y_clip: [-2.0, 2.0]
   dead_reckoning_decay: 0.8
   speed_history_len: 30
 
@@ -83,9 +84,9 @@ triangulation:
   max_y_extent: 30.0
 
 keyframe:
-  parallax_threshold: 25.0
-  min_gap: 3
-  max_gap: 20
+  parallax_threshold: 40.0     # 고속 주행 시 parallax가 빨리 쌓임
+  min_gap: 8
+  max_gap: 40
   adaptive_inlier_ratio: 0.4
   min_adaptive_inliers: 25
   stall_distance: 0.3
@@ -116,15 +117,17 @@ ba:
   min_iterations: 3
 
 loop_closure:
-  min_frame_gap: 30
-  top_k: 5
-  min_inliers: 30
-  min_inlier_ratio: 0.25
-  descriptor_similarity: 0.97
-  verify_min_inliers: 25
-  verify_min_inlier_ratio: 0.15
+  min_frame_gap: 50            # raw 프레임 기준 (1101프레임 단편 시퀀스용)
+  top_k: 5                     # kitti_urban과 동일 (검증 후보 수)
+  min_inliers: 20
+  min_inlier_ratio: 0.15
+  descriptor_similarity: 0.80    # kitti_urban과 동일 (centered mean-pool 기준)
+  check_interval: 3
+  min_distinctiveness: 1.02
+  verify_min_inliers: 25         # 07 실측 검증값 동기화 — 01은 루프가 없어 오탐 방지가 특히 중요
+  verify_min_inlier_ratio: 0.30  # (구 값 12/0.10은 디스크립터 붕괴 시절 튜닝 → 가짜 루프 위험)
   verify_min_3d_points: 15
-  verify_reprojection_error: 5.0
+  verify_reprojection_error: 8.0
 
 pose_graph:
   rotation_weight: 10.0
@@ -136,7 +139,7 @@ map_culling:
 
 viz:
   enabled: true
-  window_size: [1226, 370]
+  window_size: [640, 360]
   keypoint_radius: 2
   voxel_size: 0.1
   point_size: 3.0

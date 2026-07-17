@@ -241,8 +241,10 @@ def train(args):
     use_teacher_desc = bool(getattr(args, "use_teacher_desc", True))
     teacher = SuperPoint(return_desc=use_teacher_desc).to(device)
     
-    # 가중치 로드
-    w_path = os.path.join(ROOT_DIR, "superpoint_v1.pth")
+    # 가중치 로드 (weights/ 우선, 루트는 하위호환)
+    w_path = os.path.join(ROOT_DIR, "weights", "superpoint_v1.pth")
+    if not os.path.exists(w_path):
+        w_path = os.path.join(ROOT_DIR, "superpoint_v1.pth")
     teacher.load_state_dict(torch.load(w_path, map_location=device, weights_only=False))
     teacher.eval()
 
@@ -362,7 +364,16 @@ def train(args):
             for i, img in enumerate(pbar):
                 img = img.to(device, non_blocking=True)
                 labels, teacher_mask, teacher_desc = get_teacher_labels(teacher, img)
-                
+
+                # [가드] desc 증류가 켜져 있는데 teacher desc가 없으면 조용히 desc_loss=0으로
+                # 학습이 진행되어 디스크립터 헤드가 붕괴한다 (v14_latest에서 실측된 사고).
+                if use_teacher_desc and float(args.desc_weight) > 0 and teacher_desc is None:
+                    raise RuntimeError(
+                        "use_teacher_desc=True인데 teacher가 desc를 반환하지 않음 — "
+                        "descriptor head가 그래디언트를 못 받아 붕괴합니다. "
+                        "teacher의 return_desc 설정을 확인하세요."
+                    )
+
                 with torch.cuda.amp.autocast(enabled=use_amp):
                     semi, desc = student(img)
                     det_loss = F.cross_entropy(semi, labels, weight=ce_weight)

@@ -1,5 +1,20 @@
 # VSLab MobileNet-SuperPoint SLAM 통합 기술 문서
 
+> ## ⚠️ 2026-07 업데이트 (필독)
+> 이 문서 작성 이후 다음이 확인/변경되었습니다. 상충하는 내용은 아래가 우선합니다.
+>
+> 1. **`v14_latest.pth`의 디스크립터 헤드 붕괴 확인** — 검출/트래킹은 정상이나
+>    기술자 매칭이 불가능한 상태 (인접 프레임 inlier 7%). 루프 클로저를 쓰려면
+>    **`weights/v14_desc_ft.pth`**(디스크립터 헤드 재증류본)를 사용할 것.
+>    복구 방법: `learning/finetune_descriptor.py` ([TRAINING_KO.md](TRAINING_KO.md) 참고)
+> 2. **루프 클로저 전면 개편** — centered mean-pooling 검출 + PnP 우선 검증 +
+>    **Sim3(7-DOF) PGO**. KITTI 07에서 루프 검출(PnP 92 inliers, ATE 13.2m),
+>    08에서 오탐 0건 실측 검증.
+> 3. **config 이름 변경** — `kitti08.yaml`→`config/kitti_urban.yaml`,
+>    `kitti01.yaml`→`config/kitti_highway.yaml`
+> 4. **BTMatcher는 CPU 사용** (MPS가 6배 느림 — 실측), 자동 리사이즈 대신
+>    시퀀스 원본 해상도 `--resize` + `--calib` 권장. 실행법: [run.md](../run.md)
+
 목표는 다음 3가지입니다.
 
 1. 프로젝트의 기술 구조를 한눈에 이해할 수 있게 정리
@@ -131,8 +146,8 @@ VSLab은 기존 ORB-SLAM 계열 파이프라인의 프론트엔드를 경량 딥
 
 - Student: MobileNetV2 (ImageNet pretrained)
 - Teacher: Original SuperPoint (VGG-based)
-- 스크립트: `learning/train_superpoint_v13.py`
-- 설정: `learning/config_v13.yml`
+- 스크립트: `learning/train_superpoint.py`
+- 설정: `learning/train_config.yml`
 - 데이터: KITTI Odometry 00~10 (`dataset/training`)
 
 ### 4.3 2-Phase Training
@@ -278,17 +293,19 @@ VSLab의 MobileNet 기반 SuperPoint SLAM 접근은 다음을 동시에 달성�
 - 기존 SLAM 파이프라인과의 통합 용이성
 - 임베디드/실시간 적용 가능성
 
-특히 `v14_latest.pth`로 대표되는 2단계 증류 학습 전략은,
-단순 경량화로 인한 성능 하락을 억제하면서도 실제 운용 가능한 속도 영역으로 모델을 끌어온 핵심 요소로 평가할 수 있습니다.
+특히 2단계 증류 학습 전략은 단순 경량화로 인한 성능 하락을 억제하면서도
+실제 운용 가능한 속도 영역으로 모델을 끌어온 핵심 요소로 평가할 수 있습니다.
+(단, `v14_latest.pth`는 이후 디스크립터 헤드 붕괴가 확인되어 — 문서 상단 업데이트 참고 —
+현재 권장 가중치는 디스크립터를 재증류한 `weights/v14_desc_ft.pth`입니다.)
 
 ---
 
 ## 부록 A. 관련 문서
 
 - 프로젝트 개요/실행: `README.md`
+- 실행 예시: `run.md`
 - 파이프라인 설명: `docs/INTEGRATED_PIPELINE_KO.md`
 - 학습 상세: `docs/TRAINING_KO.md`
-- API: `docs/API_REFERENCE.md`
 
 ## 부록 B. 핵심 파일 참조
 
@@ -296,5 +313,5 @@ VSLab의 MobileNet 기반 SuperPoint SLAM 접근은 다음을 동시에 달성�
 - `matcher_module/btmatcher.py`
 - `slam/visual_slam_3d.py`
 - `slam/loop_closure.py`
-- `learning/train_superpoint_v13.py`
-- `learning/config_v13.yml`
+- `learning/train_superpoint.py`
+- `learning/train_config.yml`
