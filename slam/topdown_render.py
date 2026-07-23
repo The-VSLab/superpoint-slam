@@ -23,35 +23,27 @@ def render_topdown_map(
     canvas_size: tuple[int, int] = (800, 800),
     margin: int = 40,
 ) -> np.ndarray:
-    """탑다운 맵 렌더링 (경로 + 특징점 단순 표시)
+    """탑다운 맵 렌더링 (경로만 표시)
 
     Args:
         trajectory_xy: 카메라 경로 좌표 (N, 2)
-        map_xy: 맵 특징점 좌표 (M, 2)
-        is_floor_array: 바닥 여부 배열 (M,), True면 바닥(빨간색), False면 사물(파란색)
+        map_xy: 맵 특징점 좌표 (M, 2), 현재 렌더링에는 사용하지 않음
+        is_floor_array: 바닥 여부 배열 (M,), 현재 렌더링에는 사용하지 않음
         canvas_size: 출력 이미지 크기 (H, W)
         margin: 여백
 
     Legend:
-        - 파란색 점: 사물(구조물) 위치
-        - 빨간색 점: 바닥 위치
         - 녹색 선: 카메라 이동 경로
-        - 파란점: 시작점
-        - 빨간점: 끝점
+        - 주황색 점: 시작점
+        - 자주색 점: 끝점
     """
     h, w = canvas_size
     canvas = np.full((h, w, 3), 255, dtype=np.uint8)  # 흰 배경
 
-    if len(trajectory_xy) == 0 and len(map_xy) == 0:
+    if len(trajectory_xy) == 0:
         return canvas
 
-    all_pts = []
-    if len(trajectory_xy) > 0:
-        all_pts.append(trajectory_xy)
-    if len(map_xy) > 0:
-        all_pts.append(map_xy)
-    all_pts = np.vstack(all_pts)
-
+    all_pts = trajectory_xy
     min_xy = all_pts.min(axis=0)
     max_xy = all_pts.max(axis=0)
     span = np.maximum(max_xy - min_xy, 1e-6)
