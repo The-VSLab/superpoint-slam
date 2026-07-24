@@ -176,6 +176,7 @@ class PoseGraphConfig:
     scale_weight: float = 1.0                     # Sim3 스케일 자유도 가중치 (루프 엣지)
     essential_translation_weight: float = 1e-3    # Essential 루프: 병진 스케일 불확실 → 회전만 신뢰
     iterations: int = 20
+    optimize_every_n_loops: int = 5               # 루프 N개마다 PGO 실행 (첫 루프는 즉시, 종료 시 항상 1회)
 
 
 @dataclass
