@@ -200,6 +200,11 @@ class VisualSLAM3D:
         self.traj_points = []
         self.last_keyframe_idx = 0
 
+        # PGO 스로틀: 루프마다 전체 그래프 재최적화는 루프가 많은 시퀀스(KITTI 00)에서
+        # 비용 폭증 → 첫 루프는 즉시, 이후 N개 누적 시에만 실행 (종료 시 최종 1회는 항상)
+        self._loops_since_pgo = 0
+        self._pgo_runs = 0
+
         # 포즈 안정화 + 추정 모듈
         self.stabilizer = PoseStabilizer(c.stabilization)
         self.pose_estimator = PoseEstimator(self.K, c.pnp, c.motion, c.epipolar)
@@ -766,7 +771,12 @@ class VisualSLAM3D:
                 'method': loop.method,     # 'pnp'(metric 병진) / 'ess'(회전만)
                 'information_scale': 1.0,
             })
-            self.optimize_pose_graph()
+            # 스로틀: 첫 루프는 즉시(초기 드리프트 교정), 이후 N개 누적 시 실행
+            self._loops_since_pgo += 1
+            if self._pgo_runs == 0 or self._loops_since_pgo >= self.cfg.pose_graph.optimize_every_n_loops:
+                self.optimize_pose_graph()
+                self._loops_since_pgo = 0
+                self._pgo_runs += 1
 
         # LBA는 실시간 추적 시 cur_pose를 오염시키므로 비활성화
         # GBA만 후처리로 실행합니다 (process() 루프 종료 후)
@@ -777,7 +787,9 @@ class VisualSLAM3D:
             logger.warning("g2o not available - pose graph optimization skipped")
             return None
         optimizer = g2o.SparseOptimizer()
-        solver = g2o.BlockSolverSim3(g2o.LinearSolverDenseSim3())
+        # 포즈 그래프는 희소(체인+소수 루프 엣지) → Eigen sparse 솔버 사용.
+        # Dense 솔버는 키프레임 1000개 규모(KITTI 00)에서 루프마다 수십 초 소요.
+        solver = g2o.BlockSolverSim3(g2o.LinearSolverEigenSim3())
         algorithm = g2o.OptimizationAlgorithmLevenberg(solver)
         optimizer.set_algorithm(algorithm)
         return optimizer
@@ -887,8 +899,11 @@ class VisualSLAM3D:
             edge_count += 1
 
         # 3. 최적화 실행
+        _pgo_t0 = time.perf_counter()
         optimizer.initialize_optimization()
         optimizer.optimize(pg.iterations)
+        logger.info("[Pose Graph] optimized %d nodes / %d edges in %.2fs",
+                    n_kf, edge_count, time.perf_counter() - _pgo_t0)
 
         # 4. 결과 추출 → 키프레임 포즈 갱신 (Sim3 → T_wc, metric)
         for i in range(n_kf):
