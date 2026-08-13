@@ -140,7 +140,9 @@ class SLAMVisualizer:
             traj_2d = traj_pts[:, [0, 2]]
             map_3d = np.asarray(pcd.points)
             map_2d = map_3d[:, [0, 2]] if len(map_3d) > 0 else np.empty((0, 2))
-            map_img = render_topdown_map(traj_2d, map_2d)
+            # 특징점 표시 여부: config viz.topdown_features (기본 True). False면 경로만.
+            show_feat = getattr(self.cfg, "topdown_features", True)
+            map_img = render_topdown_map(traj_2d, map_2d, show_features=show_feat)
             cv2.imwrite(os.path.join(self.save_dir, "topdown_map.png"), map_img)
             np.savetxt(os.path.join(self.save_dir, "trajectory_xy.txt"), traj_2d, fmt="%.4f")
             logger.info("Topdown Map saved to: %s", os.path.join(self.save_dir, "topdown_map.png"))

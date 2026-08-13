@@ -191,6 +191,7 @@ class VizConfig:
     keypoint_radius: int = 2
     voxel_size: float = 0.1
     point_size: float = 3.0
+    topdown_features: bool = True   # topdown_map.png에 특징점 표시 (False면 경로만)
 
 
 @dataclass

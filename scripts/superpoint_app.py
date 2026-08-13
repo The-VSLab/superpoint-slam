@@ -106,6 +106,8 @@ def build_parser():
     # === 성능 최적화 파라미터 (3D SLAM 전용) ===
     parser.add_argument("--no-viz", action="store_true",
                         help="실시간 2D 시각화 비활성화 (성능 향상: ~15-20ms)")
+    parser.add_argument("--topdown-features", action=argparse.BooleanOptionalAction, default=True,
+                        help="topdown_map.png에 특징점 표시 (--no-topdown-features면 경로만)")
     parser.add_argument("--sp-scale", type=float, default=1.0,
                         help="SuperPoint 추론 해상도 스케일 (0.5 = 절반 해상도, 기본: 1.0)")
     parser.add_argument("--sp-interval", type=int, default=1,
@@ -177,6 +179,8 @@ _CLI_MAP = {
     # performance
     "local_map_limit": "performance.local_map_limit",
     "filter_on_sp_only": "performance.filter_on_sp_only",
+    # viz
+    "topdown_features": "viz.topdown_features",
 }
 
 
